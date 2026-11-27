@@ -40,3 +40,26 @@ def test_fastchess_arguments():
     assert "file=/t/8moves_v3.pgn format=pgn order=random" in joined
     assert "tc=8.00+0.080" in joined and "-recover" in args
     assert "file=/w/out.pgn" in joined
+
+
+def systemctl(monkeypatch, answers):
+    class Done:
+        def __init__(self, out):
+            self.stdout = out
+
+    monkeypatch.setattr(
+        "vektr_ops.match.subprocess.run", lambda args, **k: Done(answers[args[1]] + "\n")
+    )
+
+
+def test_bot_counts_as_here_while_its_service_restarts(monkeypatch):
+    from vektr_ops.match import bot_here
+
+    systemctl(monkeypatch, {"is-active": "activating", "is-enabled": "enabled"})
+    assert bot_here() is True
+    systemctl(monkeypatch, {"is-active": "inactive", "is-enabled": "enabled"})
+    assert bot_here() is True
+    systemctl(monkeypatch, {"is-active": "active", "is-enabled": "disabled"})
+    assert bot_here() is True
+    systemctl(monkeypatch, {"is-active": "inactive", "is-enabled": "disabled"})
+    assert bot_here() is False

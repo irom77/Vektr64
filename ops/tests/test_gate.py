@@ -147,3 +147,75 @@ def test_work_advances_every_open_test(tmp_path, monkeypatch):
     monkeypatch.setattr(gate, "run_batch", lambda *a, **k: (result((5, 20, 50, 20, 5)), "pgn"))
     work(s, tmp_path, once=True, idle_s=0)
     assert pooled(s, gate.test_id(A[:12], B[:12]))[1] == 200
+
+
+def add(s, commit):
+    from vektr_ops.manifest import add_candidate
+
+    m = load(s)
+    add_candidate(m, commit, "2026-11-28T00:00:00Z")
+    save(s, m)
+    return load(s).get(commit[:12])
+
+
+def test_accept_records_the_champion_it_was_played_against(tmp_path):
+    s, m = store_with_champion_and_candidate(tmp_path)
+    step(s, tmp_path, m.get(B[:12]), runner=lambda *a, **k: (result((100, 400, 1000, 480, 120)), "p"))
+    assert load(s).get(B[:12]).gate["champion"] == A[:12]
+
+
+def test_verdict_against_a_replaced_champion_is_not_applied(tmp_path):
+    from helpers import C, promote_accepted
+
+    s, _ = store_with_champion_and_candidate(tmp_path)
+    c = add(s, C)
+
+    def runner(*a, **k):  # another machine promotes B while this batch is being played
+        promote_accepted(s, B)
+        return result((100, 400, 1000, 480, 120)), "pgn"
+
+    v = step(s, tmp_path, c, runner=runner)
+    after = load(s)
+    assert v["decision"] == "continue"
+    assert after.champion == B[:12] and after.get(C[:12]).status == "candidate"
+
+
+def test_worker_survives_a_candidate_that_does_not_build(tmp_path, monkeypatch):
+    from helpers import C
+
+    from vektr_ops.builds import BuildFailed
+
+    s, _ = store_with_champion_and_candidate(tmp_path)
+    add(s, C)
+
+    def build(root, commit):
+        if commit == B:
+            raise BuildFailed("error[E0425]: cannot find value")
+        return Path(root) / commit[:12]
+
+    monkeypatch.setattr(gate, "ensure_build", build)
+    monkeypatch.setattr("vektr_ops.anchors.anchor_step", lambda store, root, v: None)
+    monkeypatch.setattr(gate, "run_batch", lambda *a, **k: (result((5, 20, 50, 20, 5)), "pgn"))
+    work(s, tmp_path, once=True, idle_s=0)
+    assert pooled(s, gate.test_id(A[:12], C[:12]))[1] == 200
+    assert load(s).get(B[:12]).status == "candidate"  # a local build fault rejects nothing
+
+
+def test_candidate_with_only_discarded_batches_is_rejected(tmp_path):
+    s, m = store_with_champion_and_candidate(tmp_path)
+    runner = lambda *a, **k: (result((0, 0, 50, 0, 0), bad=10), "pgn")
+    for _ in range(gate.DISCARD_LIMIT - 1):
+        assert step(s, tmp_path, load(s).get(B[:12]), runner=runner)["decision"] == "continue"
+    v = step(s, tmp_path, load(s).get(B[:12]), runner=runner)
+    after = load(s).get(B[:12])
+    assert v["decision"] == "reject" and v["reason"] == "invalid"
+    assert after.status == "rejected" and load(s).champion == A[:12]
+
+
+def test_discarded_batches_do_not_reject_once_some_are_counted(tmp_path):
+    s, m = store_with_champion_and_candidate(tmp_path)
+    step(s, tmp_path, m.get(B[:12]), runner=lambda *a, **k: (result((5, 20, 50, 20, 5)), "pgn"))
+    bad = lambda *a, **k: (result((0, 0, 50, 0, 0), bad=10), "pgn")
+    for _ in range(gate.DISCARD_LIMIT + 1):
+        step(s, tmp_path, load(s).get(B[:12]), runner=bad)
+    assert load(s).get(B[:12]).status == "candidate"

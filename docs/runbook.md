@@ -45,6 +45,7 @@ uv run --project ops vektr-ops gate my-branch  # on the laptop; plays until deci
 - On `accept` the candidate becomes the champion. Within ten minutes the box builds it,
   checks that it starts and is not more than 10% slower, and switches at the next game.
 - `uv run --project ops vektr-ops rollback` puts the previous champion back.
+- `uv run --project ops vektr-ops reject <id>` withdraws an open candidate; its test stops on every machine.
 - `uv run --project ops vektr-ops anchors` measures the champion against fixed-strength
   opponents (the box does this by itself after a promotion).
 
@@ -86,6 +87,7 @@ Edit `bot/config.template.yml` (time controls, opponents, matchmaking pace) and 
 | Losses on time | `grep -l "Time forfeit" bot/game_records/*.pgn`; raise the overheads above |
 | `sync error:` in `vektr-ops status`, or a notice on the page | The box could not put the champion into play: the store was unreachable, the commit did not build, the build did not start, or it was too slow. The bot keeps playing the previous engine. The message says which; `journalctl -u vektr64-sync -n 40` has the detail. It clears itself on the next good sync |
 | Page says the engine in play is not the champion | Normal for up to ten minutes after a promotion; otherwise see `sync error` |
+| A candidate is never played on one machine | It failed to build there: the reason is in `builds/<id>.failed`, and the build is tried again an hour later (delete the file to retry now) |
 | A test never finishes | `vektr-ops status` shows open tests; batches with time forfeits or crashes are discarded (`gate/<test>/discarded/` in the data repo) |
 | Box unreachable from the laptop | Tailscale key expiry or the SSH browser check; the bot itself does not depend on the laptop |
 

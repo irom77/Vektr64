@@ -94,3 +94,52 @@ def test_promoting_the_champion_again_changes_nothing():
     before = copy.deepcopy(m)
     promote(m, A[:12], bootstrap=True)
     assert m == before
+
+
+def test_save_refuses_to_overwrite_a_newer_manifest(tmp_path):
+    from helpers import B, store_with_champion
+
+    from vektr_ops.manifest import add_candidate, load, save
+    from vektr_ops.store import StoreConflict
+
+    s = store_with_champion(tmp_path)
+    mine, theirs = load(s), load(s)
+    theirs.champion_version().box_nps = 1
+    save(s, theirs)
+    add_candidate(mine, B, "2026-11-28T00:00:00Z")
+    with pytest.raises(StoreConflict):
+        save(s, mine)
+    assert load(s).champion_version().box_nps == 1
+
+
+def test_update_applies_the_change_on_top_of_a_concurrent_write(tmp_path):
+    from helpers import A, B, store_with_champion
+
+    from vektr_ops.manifest import add_candidate, load, save, update
+
+    s = store_with_champion(tmp_path)
+    attempts = []
+
+    def change(m):
+        if not attempts:  # another machine writes between this load and this save
+            other = load(s)
+            other.champion_version().box_nps = 7
+            save(s, other)
+        attempts.append(1)
+        return add_candidate(m, B, "2026-11-28T00:00:00Z").id
+
+    assert update(s, change) == B[:12]
+    after = load(s)
+    assert len(attempts) == 2 and after.get(A[:12]).box_nps == 7 and after.get(B[:12]).status == "candidate"
+
+
+def test_update_saves_nothing_when_the_change_raises(tmp_path):
+    from helpers import store_with_champion
+
+    from vektr_ops.manifest import NotPromotable, load, rollback, update
+
+    s = store_with_champion(tmp_path)
+    before = s.read_bytes("nets", "manifest.json")
+    with pytest.raises(NotPromotable):
+        update(s, rollback)
+    assert s.read_bytes("nets", "manifest.json") == before

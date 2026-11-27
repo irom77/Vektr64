@@ -1,12 +1,16 @@
 """Engine binaries built from a given commit, kept side by side in `builds/<id>/`."""
 
+import fcntl
 import re
 import shutil
 import subprocess
+import tempfile
+import time
 from pathlib import Path
 
 from vektr_ops.manifest import version_id
 
+RETRY_AFTER_S = 3600
 BENCH = re.compile(r"^(\d+) nodes (\d+) nps\s*$")
 
 
@@ -29,33 +33,55 @@ def bench_nps(binary: Path) -> int:
 
 
 def ensure_build(root: Path, commit: str) -> Path:
-    """The engine binary for `commit`, building it once from a clean export of that commit."""
-    home = Path(root) / "builds" / version_id(commit)
+    """The engine binary for `commit`, building it once from a clean export of that commit.
+
+    One process builds a given commit at a time, in a scratch directory of its own, so a
+    failed or interrupted build never touches a finished binary. A commit that failed to
+    build is not tried again for `RETRY_AFTER_S`; the reason is kept in `builds/<id>.failed`.
+    """
+    builds = Path(root) / "builds"
+    id = version_id(commit)
+    home = builds / id
     binary = home / "vektr"
     if binary.exists():
         return binary
-    source = home / "src"
+    builds.mkdir(parents=True, exist_ok=True)
+    note = builds / f"{id}.failed"
+    with open(builds / f"{id}.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if binary.exists():  # another process built it while this one waited
+            return binary
+        if note.exists() and time.time() - note.stat().st_mtime < RETRY_AFTER_S:
+            raise BuildFailed(f"failed earlier, not retried yet: {note.read_text()}")
+        scratch = Path(tempfile.mkdtemp(dir=builds, prefix=f"{id}.build-"))
+        try:
+            compile_into(root, commit, scratch)
+            home.mkdir(exist_ok=True)
+            temp = home / "vektr.part"
+            shutil.copy2(scratch / "engine" / "target" / "release" / "vektr", temp)
+            temp.replace(binary)
+            note.unlink(missing_ok=True)
+            return binary
+        except BuildFailed as error:
+            note.write_text(str(error)[-2000:])
+            raise
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+
+
+def compile_into(root: Path, commit: str, scratch: Path) -> None:
+    """Export the commit's `engine/` into `scratch` and build it there."""
     known = subprocess.run(["git", "cat-file", "-e", f"{commit}^{{commit}}"], cwd=root, capture_output=True)
     if known.returncode != 0:  # promoted elsewhere: this checkout has not fetched it yet
         subprocess.run(["git", "fetch", "--quiet", "origin"], cwd=root, capture_output=True)
-    try:
-        source.mkdir(parents=True, exist_ok=True)
-        archive = subprocess.run(
-            ["git", "archive", commit, "engine"], cwd=root, capture_output=True
-        )
-        if archive.returncode != 0:
-            raise BuildFailed(archive.stderr.decode(errors="replace").strip())
-        subprocess.run(["tar", "-x", "-C", str(source)], input=archive.stdout, check=True)
-        built = subprocess.run(
-            ["cargo", "build", "--release"], cwd=source / "engine", capture_output=True, text=True
-        )
-        if built.returncode != 0:
-            raise BuildFailed(built.stdout + built.stderr)
-        temp = home / "vektr.part"
-        shutil.copy2(source / "engine" / "target" / "release" / "vektr", temp)
-        temp.replace(binary)
-        shutil.rmtree(source, ignore_errors=True)
-        return binary
-    except BaseException:
-        shutil.rmtree(home, ignore_errors=True)
-        raise
+    archive = subprocess.run(["git", "archive", commit, "engine"], cwd=root, capture_output=True)
+    if archive.returncode != 0:
+        raise BuildFailed(archive.stderr.decode(errors="replace").strip())
+    unpacked = subprocess.run(["tar", "-x", "-C", str(scratch)], input=archive.stdout, capture_output=True)
+    if unpacked.returncode != 0:
+        raise BuildFailed(unpacked.stderr.decode(errors="replace").strip())
+    built = subprocess.run(
+        ["cargo", "build", "--release"], cwd=scratch / "engine", capture_output=True, text=True
+    )
+    if built.returncode != 0:
+        raise BuildFailed(built.stdout + built.stderr)

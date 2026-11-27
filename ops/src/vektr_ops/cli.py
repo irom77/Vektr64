@@ -76,6 +76,8 @@ def utc_now() -> str:
 
 
 def progress_line(v: dict) -> str:
+    if "llr" not in v:
+        return f"{v.get('decision', '?')} ({v.get('reason', '')})"
     return f"games={v['games']} llr={v['llr']:+.2f} elo={v['elo']:+.1f} ±{v['margin']:.1f}"
 
 
@@ -98,16 +100,18 @@ def gate(
     if not is_pushed(root, commit):
         typer.echo(f"error: {commit[:12]} is not on origin; push it first so every machine can build it")
         raise typer.Exit(2)
-    m = manifest.load(store)
-    if m.champion is None:
+    if manifest.load(store).champion is None:
         typer.echo("error: there is no champion yet; run `vektr-ops promote <ref> --bootstrap`")
         raise typer.Exit(2)
-    candidate = manifest.add_candidate(m, commit, utc_now())
+    candidate = manifest.update(store, lambda m: manifest.add_candidate(m, commit, utc_now()))
     if candidate.status == "champion":
         typer.echo(f"{candidate.id} is already the champion")
         return
-    manifest.save(store, m)
-    typer.echo(f"testing {candidate.id} against champion {m.champion}")
+    if candidate.status != "candidate":
+        reason = (candidate.gate or {}).get("reason", "")
+        typer.echo(f"{candidate.id} is already {candidate.status} ({reason})")
+        return
+    typer.echo(f"testing {candidate.id} against champion {manifest.load(store).champion}")
     played = 0
     while True:
         v = gate_mod.step(store, root, candidate)
@@ -154,34 +158,58 @@ def promote(
     """Make a version the champion. Needs a passed gate, except for the very first version."""
     root = repo_root()
     store = the_store(root)
-    m = manifest.load(store)
-    try:
+    commit = resolve_commit(root, ref) if bootstrap else None
+
+    def change(m) -> str:
         if bootstrap:
-            version = manifest.add_candidate(m, resolve_commit(root, ref), utc_now())
+            version = manifest.add_candidate(m, commit, utc_now())
             manifest.promote(m, version.id, bootstrap=True)
         else:
             manifest.promote(m, ref)
+        return m.champion
+
+    try:
+        champion = manifest.update(store, change)
     except KeyError:
         typer.echo(f"error: no version {ref!r} in the manifest")
         raise typer.Exit(2)
     except manifest.NotPromotable as error:
         typer.echo(f"error: {error}")
         raise typer.Exit(2)
-    manifest.save(store, m)
-    typer.echo(f"champion: {m.champion}")
+    typer.echo(f"champion: {champion}")
+
+
+@app.command()
+def reject(id: str = typer.Argument(..., help="Version id of an open candidate.")) -> None:
+    """Withdraw a candidate: its test stops on every machine and it is never played."""
+    store = the_store(repo_root())
+
+    def change(m) -> None:
+        if m.get(id).status != "candidate":
+            raise manifest.NotPromotable(f"{id} is {m.get(id).status}, not an open candidate")
+        record = {"decision": "reject", "reason": "withdrawn", "games": 0, "finished": utc_now()}
+        manifest.reject(m, id, record)
+
+    try:
+        manifest.update(store, change)
+    except KeyError:
+        typer.echo(f"error: no version {id!r} in the manifest")
+        raise typer.Exit(2)
+    except manifest.NotPromotable as error:
+        typer.echo(f"error: {error}")
+        raise typer.Exit(2)
+    typer.echo(f"rejected: {id}")
 
 
 @app.command()
 def rollback() -> None:
     """Restore the previous champion. The box switches back at its next sync."""
     store = the_store(repo_root())
-    m = manifest.load(store)
     try:
-        restored = manifest.rollback(m)
+        restored = manifest.update(store, manifest.rollback)
     except manifest.NotPromotable as error:
         typer.echo(f"error: {error}")
         raise typer.Exit(2)
-    manifest.save(store, m)
     typer.echo(f"champion: {restored.id}")
 
 

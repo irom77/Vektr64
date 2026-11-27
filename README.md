@@ -50,6 +50,7 @@ Measuring and changing the engine (needs `HF_TOKEN` in `.env`; see [docs/runbook
 uv run --project ops vektr-ops gate <git-ref>   # test a candidate against the champion
 uv run --project ops vektr-ops anchors          # place the champion on the absolute scale
 uv run --project ops vektr-ops rollback         # put the previous champion back
+uv run --project ops vektr-ops reject <id>      # withdraw an open candidate
 uv run --project ops vektr-ops page             # write the status page to site/
 uv run --project ops vektr-ops sync             # play machine only: follow the champion
 ```

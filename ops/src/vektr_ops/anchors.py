@@ -8,7 +8,7 @@ from pathlib import Path
 
 from vektr_ops import gate, tools
 from vektr_ops.builds import bench_nps, ensure_build
-from vektr_ops.manifest import Version, load, save
+from vektr_ops.manifest import Version, load, update
 from vektr_ops.match import Engine, Interrupted, run_batch
 from vektr_ops.stats import expected_score
 from vektr_ops.store import Store
@@ -128,7 +128,5 @@ def anchor_step(store: Store, root: Path, version: Version, runner=None) -> dict
 
     current = estimate(totals)
     if all(sum(totals[a]) >= GAMES_PER_ANCHOR for a in ANCHORS):
-        m = load(store)
-        m.get(version.id).anchor = current
-        save(store, m)
+        update(store, lambda m: setattr(m.get(version.id), "anchor", current))
     return current

@@ -2,6 +2,7 @@
 
 import secrets
 import socket
+import sys
 import time
 import zlib
 from datetime import datetime, timezone
@@ -11,7 +12,7 @@ import psutil
 
 from vektr_ops import tools
 from vektr_ops.builds import bench_nps, ensure_build
-from vektr_ops.manifest import Version, load, promote, reject, save
+from vektr_ops.manifest import Version, load, promote, reject, update
 from vektr_ops.match import (
     PAIRS_PER_BATCH,
     Engine,
@@ -30,6 +31,7 @@ ELO0 = 0.0
 ELO1 = 5.0
 ENGINE_OPTIONS = {"Hash": "16", "Threads": "1", "Move Overhead": "10"}
 BUSY_WAIT_S = 60
+DISCARD_LIMIT = 5  # this many unusable batches and none usable: the candidate is rejected
 
 
 def test_id(champion_id: str, candidate_id: str) -> str:
@@ -116,19 +118,40 @@ def verdict(penta: Penta, games: int) -> dict:
     }
 
 
-def settle(store: Store, candidate_id: str, result: dict) -> None:
-    """Write a final verdict into the manifest: promote on accept, reject otherwise."""
-    m = load(store)
-    version = m.get(candidate_id)
+def settle(store: Store, candidate_id: str, champion_id: str, result: dict) -> bool:
+    """Write a final verdict into the manifest: promote on accept, reject otherwise.
+
+    The verdict only stands against the champion it was played against. Returns False, and
+    writes nothing, when the champion has changed or the candidate is already settled.
+    """
+    final = {
+        **result,
+        "champion": champion_id,
+        "finished": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+    def change(m) -> bool:
+        version = m.get(candidate_id)
+        if version.status != "candidate" or m.champion != champion_id:
+            return False
+        if final["decision"] == "accept":
+            version.gate = final
+            promote(m, candidate_id)
+        else:
+            reject(m, candidate_id, final)
+        return True
+
+    return update(store, change)
+
+
+def settled(store: Store, candidate_id: str, champion_id: str, result: dict) -> dict:
+    """Settle a decided test; if the champion moved on meanwhile, the test simply stays open."""
+    if settle(store, candidate_id, champion_id, result):
+        return result
+    version = load(store).get(candidate_id)
     if version.status != "candidate":
-        return
-    result = {**result, "finished": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
-    if result["decision"] == "accept":
-        version.gate = result
-        promote(m, candidate_id)
-    else:
-        reject(m, candidate_id, result)
-    save(store, m)
+        return version.gate or {"decision": version.status}
+    return {**result, "decision": "continue", "reason": "champion changed"}
 
 
 def play(root: Path, a: Engine, b: Engine, here_nps: int, box_nps: int, runner, name: str):
@@ -168,8 +191,7 @@ def step(store: Store, root: Path, candidate: Version, runner=None) -> dict:
 
     current = verdict(*pooled(store, test))
     if current["decision"] != "continue":  # another machine played the deciding batch
-        settle(store, version.id, current)
-        return current
+        return settled(store, version.id, champion.id, current)
 
     champion_bin = ensure_build(root, champion.engine_commit)
     candidate_bin = ensure_build(root, version.engine_commit)
@@ -190,9 +212,26 @@ def step(store: Store, root: Path, candidate: Version, runner=None) -> dict:
     upload_batch(store, test, name, result, pgn, meta)
 
     current = verdict(*pooled(store, test))
+    if current["decision"] == "continue" and not result.valid and current["games"] == 0:
+        discarded = sum(
+            path.endswith(".json") for path in store.list("data", f"gate/{test}/discarded/")
+        )
+        if discarded >= DISCARD_LIMIT:
+            current = {**current, "decision": "reject", "reason": "invalid", "discarded": discarded}
     if current["decision"] != "continue":
-        settle(store, version.id, current)
+        return settled(store, version.id, champion.id, current)
     return current
+
+
+def attempt(what: str, job) -> bool:
+    """Run one piece of worker work; a fault in it is reported and the worker carries on."""
+    try:
+        return bool(job())
+    except StoreUnavailable:
+        raise
+    except Exception as error:
+        print(f"{what}: {type(error).__name__}: {str(error)[-500:]}", file=sys.stderr, flush=True)
+        return False
 
 
 def work(store: Store, root: Path, *, once: bool = False, idle_s: int = 300) -> None:
@@ -203,11 +242,10 @@ def work(store: Store, root: Path, *, once: bool = False, idle_s: int = 300) -> 
         busy = False
         try:
             for candidate in load(store).candidates():
-                step(store, root, candidate)
-                busy = True
+                busy |= attempt(candidate.id, lambda: step(store, root, candidate))
             champion = load(store).champion_version()
-            if champion is not None and anchor_step(store, root, champion) is not None:
-                busy = True
+            if champion is not None:
+                busy |= attempt(champion.id, lambda: anchor_step(store, root, champion) is not None)
         except StoreUnavailable:
             if once:
                 raise

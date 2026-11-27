@@ -2,7 +2,9 @@
 
 from dataclasses import asdict, dataclass, field
 
-from vektr_ops.store import Store, read_json, write_json
+import json
+
+from vektr_ops.store import Store, StoreConflict
 
 PATH = "manifest.json"
 SCHEMA = 1
@@ -29,6 +31,8 @@ class Version:
 class Manifest:
     champion: str | None = None
     versions: list[Version] = field(default_factory=list)
+    # The store state this was loaded from; never saved. A manifest is saved once per load.
+    revision: str | None = field(default=None, compare=False)
 
     def get(self, id: str) -> Version:
         for version in self.versions:
@@ -44,16 +48,40 @@ class Manifest:
 
 
 def load(store: Store) -> Manifest:
-    """Read the manifest; an empty one when the store has none yet."""
-    raw = read_json(store, "nets", PATH)
+    """Read the newest manifest; an empty one when the store has none yet."""
+    raw, revision = store.read_versioned("nets", PATH)
     if raw is None:
-        return Manifest()
-    return Manifest(raw.get("champion"), [Version(**v) for v in raw.get("versions", [])])
+        return Manifest(revision=revision)
+    body = json.loads(raw)
+    versions = [Version(**v) for v in body.get("versions", [])]
+    return Manifest(body.get("champion"), versions, revision)
 
 
 def save(store: Store, m: Manifest) -> None:
+    """Write the manifest; `StoreConflict` if someone else wrote it since `m` was loaded."""
     body = {"schema": SCHEMA, "champion": m.champion, "versions": [asdict(v) for v in m.versions]}
-    write_json(store, "nets", PATH, body, overwrite=True)
+    data = json.dumps(body, indent=1, sort_keys=True).encode()
+    store.write_bytes("nets", PATH, data, overwrite=True, expect=m.revision)
+
+
+def update(store: Store, change, attempts: int = 5):
+    """Load, apply `change(manifest)`, save; start over if another machine wrote in between.
+
+    Returns what `change` returned. Nothing is saved if `change` raises or changes nothing.
+    """
+    for attempt in range(attempts):
+        m = load(store)
+        before = (m.champion, [asdict(v) for v in m.versions])
+        result = change(m)
+        if before == (m.champion, [asdict(v) for v in m.versions]):
+            return result
+        try:
+            save(store, m)
+        except StoreConflict:
+            if attempt == attempts - 1:
+                raise
+            continue
+        return result
 
 
 def version_id(engine_commit: str, net: str | None = None) -> str:

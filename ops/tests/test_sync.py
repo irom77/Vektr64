@@ -84,7 +84,7 @@ def test_unreachable_store_leaves_the_current_engine(tmp_path):
     run(s, tmp_path)
 
     class Down:
-        def read_bytes(self, *a):
+        def read_versioned(self, *a):
             raise StoreUnavailable("offline")
 
     with pytest.raises(StoreUnavailable):
@@ -138,3 +138,22 @@ def test_engine_dir_falls_back_to_the_working_tree(tmp_path):
     s = store_with_champion(tmp_path / "store", A)
     run(s, tmp_path)
     assert engine_dir(tmp_path) == tmp_path / "builds" / "current"
+
+
+def test_build_that_left_no_binary_is_not_switched_to(tmp_path):
+    s = store_with_champion(tmp_path / "store", A)
+    run(s, tmp_path)
+    promote_accepted(s, B)
+    with pytest.raises(SyncRefused, match="no engine binary"):
+        run(s, tmp_path, build=lambda root, commit: root / "builds" / commit[:12] / "vektr")
+    assert current_id(tmp_path) == A[:12]
+
+
+def test_current_pointing_at_a_missing_build_is_repaired(tmp_path):
+    import shutil
+
+    s = store_with_champion(tmp_path / "store", A)
+    run(s, tmp_path)
+    shutil.rmtree(tmp_path / "builds" / A[:12])
+    assert run(s, tmp_path) == f"switched to {A[:12]}"
+    assert (tmp_path / "builds" / "current" / "vektr").exists()

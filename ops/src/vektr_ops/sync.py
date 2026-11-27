@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 
 from vektr_ops.builds import bench_nps, ensure_build
-from vektr_ops.manifest import load, save
+from vektr_ops.manifest import load, update
 from vektr_ops.store import Store
 
 SPEED_MARGIN = 0.10
@@ -54,10 +54,12 @@ def follow(store: Store, root: Path, build, bench, starts, record_speed: bool) -
     if champion is None:
         raise SyncRefused("the manifest has no champion")
     playing = current_id(root)
-    if playing == champion.id:
+    if playing == champion.id and (root / "builds" / playing / "vektr").exists():
         return "unchanged"
 
-    binary = build(root, champion.engine_commit)
+    binary = Path(build(root, champion.engine_commit))
+    if not binary.exists():
+        raise SyncRefused(f"{champion.id}: no engine binary at {binary}")
     if not starts(binary):
         raise SyncRefused(f"{champion.id} does not start")
     speed = bench(binary)
@@ -72,10 +74,13 @@ def follow(store: Store, root: Path, build, bench, starts, record_speed: bool) -
             )
     switch(root, champion.id)
 
+    def record(m) -> None:
+        version = m.get(champion.id)
+        if version.box_nps is None:
+            version.box_nps = speed
+
     if record_speed and champion.box_nps is None:
-        m = load(store)
-        m.get(champion.id).box_nps = speed
-        save(store, m)
+        update(store, record)
     return f"switched to {champion.id}"
 
 

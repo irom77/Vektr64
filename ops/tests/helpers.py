@@ -26,7 +26,7 @@ def store_with_champion_and_candidate(tmp_path):
     m = load(s)
     add_candidate(m, B, "2026-11-28T00:00:00Z")
     save(s, m)
-    return s, m
+    return s, load(s)
 
 
 def promote_accepted(s, commit):

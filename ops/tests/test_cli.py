@@ -139,3 +139,30 @@ def test_page_command_writes_the_file(monkeypatch, tmp_path):
     r = CliRunner().invoke(app, ["page", "--out", str(tmp_path / "site")])
     assert r.exit_code == 0
     assert "<title>Vektr64 status</title>" in (tmp_path / "site" / "index.html").read_text()
+
+
+def test_reject_command_withdraws_a_candidate(monkeypatch, tmp_path):
+    from helpers import B, store_with_champion_and_candidate
+
+    from vektr_ops.manifest import load
+
+    s, _ = store_with_champion_and_candidate(tmp_path)
+    monkeypatch.setenv("VEKTR_STORE", str(tmp_path / "store"))
+    r = CliRunner().invoke(app, ["reject", B[:12]])
+    after = load(s).get(B[:12])
+    assert r.exit_code == 0 and "rejected" in r.output
+    assert after.status == "rejected" and after.gate["reason"] == "withdrawn"
+    r = CliRunner().invoke(app, ["reject", "nosuchid"])
+    assert r.exit_code == 2 and "no version" in r.output
+
+
+def test_gate_on_a_withdrawn_version_says_so(monkeypatch, tmp_path):
+    from helpers import B, store_with_champion_and_candidate
+
+    store_with_champion_and_candidate(tmp_path)
+    monkeypatch.setenv("VEKTR_STORE", str(tmp_path / "store"))
+    monkeypatch.setattr("vektr_ops.cli.resolve_commit", lambda root, ref: B)
+    monkeypatch.setattr("vektr_ops.cli.is_pushed", lambda root, commit: True)
+    CliRunner().invoke(app, ["reject", B[:12]])
+    r = CliRunner().invoke(app, ["gate", "some-ref"])
+    assert r.exit_code == 0 and "already rejected (withdrawn)" in r.output

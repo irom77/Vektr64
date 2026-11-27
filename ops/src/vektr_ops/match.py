@@ -39,13 +39,23 @@ def scaled_tc(box_nps: int, here_nps: int) -> str:
     return f"{BASE_S * factor:.2f}+{INC_S * factor:.3f}"
 
 
-def bot_here() -> bool:
-    """True when the Lichess bot service is running on this machine."""
+RUNNING = ("active", "activating", "reloading", "deactivating")
+
+
+def service_state(question: str) -> str:
     try:
-        done = subprocess.run(["systemctl", "is-active", SERVICE], capture_output=True, text=True)
+        done = subprocess.run(["systemctl", question, SERVICE], capture_output=True, text=True)
     except FileNotFoundError:
-        return False
-    return done.stdout.strip() == "active"
+        return ""
+    return done.stdout.strip()
+
+
+def bot_here() -> bool:
+    """True when this machine is the bot's: its service runs, is restarting, or is enabled.
+
+    A restart takes half a minute, and a batch sized in that gap would run beside rated play.
+    """
+    return service_state("is-active") in RUNNING or service_state("is-enabled") == "enabled"
 
 
 def fastchess_args(
