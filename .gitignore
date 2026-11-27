@@ -1,0 +1,7 @@
+target/
+.env
+.venv/
+__pycache__/
+bot/config.yml
+bot/game_records/
+.superpowers/

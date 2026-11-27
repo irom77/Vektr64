@@ -1,0 +1,17 @@
+[Unit]
+Description=Vektr64 Lichess bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=irom
+WorkingDirectory=/home/irom/Vektr64
+EnvironmentFile=/home/irom/Vektr64/.env
+Environment=PATH=/home/irom/.cargo/bin:/home/irom/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/irom/.local/bin/uv run --project ops vektr-ops play
+Restart=always
+RestartSec=30
+MemoryMax=600M
+
+[Install]
+WantedBy=multi-user.target
