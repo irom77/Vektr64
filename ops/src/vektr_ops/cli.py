@@ -197,11 +197,22 @@ def sync() -> None:
         typer.echo(sync_mod.sync(store, root, record_speed=bot_here()))
     except Exception as error:
         typer.echo(f"sync failed: {type(error).__name__}: {error}")
+        refresh_page(root)
         raise typer.Exit(1)
     try:
         typer.echo(f"game records uploaded: {sync_mod.upload_games(store, root)}")
     except StoreUnavailable as error:
         typer.echo(f"game records not uploaded: {error}")
+    finally:
+        refresh_page(root)
+
+
+def refresh_page(root: Path) -> None:
+    """Regenerate the page after a sync; a page problem never fails the sync."""
+    try:
+        write_page(root, root / "site")
+    except Exception as error:  # the page is a convenience, the sync is not
+        typer.echo(f"page not updated: {type(error).__name__}: {error}")
 
 
 @app.command()
@@ -250,6 +261,63 @@ def play(
     )
 
 
+def store_lines(root: Path) -> None:
+    """Status lines that come from the store and from this machine's sync state."""
+    from vektr_ops.sync import current_id
+
+    note = root / "state" / "sync-error"
+    try:
+        m = manifest.load(open_store(load_env(root)))
+    except StoreUnavailable as error:
+        configured = "HF_TOKEN or VEKTR_STORE" not in str(error)
+        typer.echo("store: unreachable" if configured else "store: not configured")
+    else:
+        champion = m.champion_version()
+        typer.echo(f"champion: {champion.id if champion else 'none'}")
+        typer.echo(f"playing: {current_id(root) or 'working-tree build'}")
+        if champion and champion.anchor and champion.anchor.get("elo") is not None:
+            a = champion.anchor
+            typer.echo(f"anchor rating: {a['elo']:.0f} ±{a['margin']:.0f}")
+        else:
+            typer.echo("anchor rating: not measured yet")
+        gated = [v for v in m.versions if v.gate]
+        if gated:
+            last = gated[-1]
+            typer.echo(f"last gate: {last.id} {last.gate.get('decision')} ({last.gate.get('games')} games)")
+        else:
+            typer.echo("last gate: none")
+        open_tests = len(m.candidates())
+        if open_tests:
+            typer.echo(f"open tests: {open_tests}")
+    if note.is_file():
+        typer.echo(f"sync error: {note.read_text().strip()}")
+
+
+def write_page(root: Path, out: Path) -> Path:
+    """Generate the status page into `out/index.html`."""
+    from vektr_ops import page as page_mod
+
+    try:
+        store = open_store(load_env(root))
+    except StoreUnavailable:
+        store = None
+    out.mkdir(parents=True, exist_ok=True)
+    target = out / "index.html"
+    temp = out / "index.html.part"
+    temp.write_text(page_mod.render(page_mod.collect(store, root)))
+    temp.replace(target)
+    return target
+
+
+@app.command()
+def page(
+    out: Path = typer.Option(None, "--out", help="Directory to write; default is site/."),
+) -> None:
+    """Generate the static status page."""
+    root = repo_root()
+    typer.echo(write_page(root, out or root / "site"))
+
+
 @app.command()
 def status() -> None:
     """Show whether the service is running and how the account stands on Lichess."""
@@ -260,6 +328,7 @@ def status() -> None:
     except FileNotFoundError:
         active = "unknown (no systemctl)"
     typer.echo(f"service: {active or 'unknown'}")
+    store_lines(repo_root())
 
     try:
         request = urllib.request.Request(

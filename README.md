@@ -6,6 +6,8 @@ on a minimal budget.
 
 - **Design:** [docs/superpowers/specs/2026-11-27-vektr64-design.md](docs/superpowers/specs/2026-11-27-vektr64-design.md)
 - **Stage 1 plan (the engine plays):** [docs/superpowers/plans/2026-11-27-stage1-engine-plays.md](docs/superpowers/plans/2026-11-27-stage1-engine-plays.md)
+- **Stage 2 plan (measuring tools):** [docs/superpowers/plans/2026-11-27-stage2-measuring-tools.md](docs/superpowers/plans/2026-11-27-stage2-measuring-tools.md)
+- **Runbook:** [docs/runbook.md](docs/runbook.md)
 - **Bench baselines:** [docs/bench.md](docs/bench.md)
 
 ## Layout
@@ -40,6 +42,16 @@ uv run --project ops vektr-ops play --dry-run   # show the bridge settings for t
 uv run --project ops vektr-ops play             # play in the foreground
 sudo systemctl enable --now vektr64             # play as a service
 uv run --project ops vektr-ops status           # service state, rating, deviation, game count
+```
+
+Measuring and changing the engine (needs `HF_TOKEN` in `.env`; see [docs/runbook.md](docs/runbook.md)):
+
+```bash
+uv run --project ops vektr-ops gate <git-ref>   # test a candidate against the champion
+uv run --project ops vektr-ops anchors          # place the champion on the absolute scale
+uv run --project ops vektr-ops rollback         # put the previous champion back
+uv run --project ops vektr-ops page             # write the status page to site/
+uv run --project ops vektr-ops sync             # play machine only: follow the champion
 ```
 
 Nothing is edited per machine. `vektr-ops play` builds the engine, sizes its hash table
