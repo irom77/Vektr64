@@ -121,6 +121,31 @@ def gate(
 
 
 @app.command()
+def anchors(
+    id: str = typer.Argument(None, help="Version id; the champion when omitted."),
+) -> None:
+    """Measure a version against fixed-strength opponents to place it on the rating scale."""
+    from vektr_ops.anchors import anchor_step
+
+    root = repo_root()
+    store = the_store(root)
+    m = manifest.load(store)
+    try:
+        version = m.get(id) if id else m.champion_version()
+    except KeyError:
+        typer.echo(f"error: no version {id!r} in the manifest")
+        raise typer.Exit(2)
+    if version is None:
+        typer.echo("error: there is no champion yet; run `vektr-ops promote <ref> --bootstrap`")
+        raise typer.Exit(2)
+    while (current := anchor_step(store, root, version)) is not None:
+        elo = "?" if current["elo"] is None else f"{current['elo']:.0f}"
+        typer.echo(f"games={current['games']} rating={elo} ±{current['margin']:.0f}")
+    done = manifest.load(store).get(version.id).anchor
+    typer.echo(f"anchor rating of {version.id}: {done['elo']:.0f} ±{done['margin']:.0f}")
+
+
+@app.command()
 def promote(
     ref: str = typer.Argument(..., help="Version id, or a git ref with --bootstrap."),
     bootstrap: bool = typer.Option(False, "--bootstrap", help="Register the first champion."),
