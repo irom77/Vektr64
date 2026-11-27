@@ -207,7 +207,12 @@ impl Searcher {
 
     fn negamax(&mut self, pos: &mut Position, mut depth: i32, ply: usize, mut alpha: i32, beta: i32) -> i32 {
         self.pv[ply].clear();
-        if ply > 0 && pos.is_draw(ply) {
+        // Inside the search any earlier occurrence of a position counts as a draw,
+        // including occurrences from the game itself. Scores then depend only on
+        // whether a position has been seen, not on how often, so an entry stored
+        // during an earlier move's search cannot hide a repetition that has since
+        // become a real threefold.
+        if ply > 0 && pos.is_draw(usize::MAX) {
             return 0;
         }
         if ply >= MAX_PLY - 1 {

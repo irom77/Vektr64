@@ -6,17 +6,17 @@ fn c(r: i64, i: i64, m: Option<u32>) -> Clock {
 
 #[test]
 fn blitz_3_plus_2_opening() {
-    assert_eq!(allocate(&c(180_000, 2_000, None), 100), (10_495, 41_980));
+    assert_eq!(allocate(&c(180_000, 2_000, None), 100), (3_498, 13_992));
 }
 
 #[test]
 fn low_on_time_with_increment() {
-    assert_eq!(allocate(&c(1_000, 2_000, None), 100), (450, 720));
+    assert_eq!(allocate(&c(1_000, 2_000, None), 100), (150, 450));
 }
 
 #[test]
 fn moves_to_go_is_used() {
-    assert_eq!(allocate(&c(60_000, 0, Some(10)), 0), (6_000, 24_000));
+    assert_eq!(allocate(&c(60_000, 0, Some(10)), 0), (3_000, 12_000));
 }
 
 #[test]

@@ -134,3 +134,57 @@ fn mate_distance_is_exact_with_a_warm_table() {
     let r = s.search(&mut p, &Limits::depth(6), &mut |_, _| {});
     assert_eq!(r.score, MATE - 1);
 }
+
+/// Plays `fen` with one long-lived searcher as White. Black replies with the move
+/// leading to the most-repeated position, or a pseudo-random move when none repeats.
+/// Returns the ply at which a position occurred for the third time, if any.
+fn first_threefold(fen: &str, plies: usize, nodes: u64, seed: u64) -> Option<usize> {
+    use std::collections::HashMap;
+    let mut p = Position::from_fen(fen).unwrap();
+    let mut s = Searcher::new(64);
+    let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    let mut seen: HashMap<u64, u32> = HashMap::new();
+    seen.insert(p.board.hash(), 1);
+    for ply in 0..plies {
+        let moves = p.legal_moves();
+        if moves.is_empty() {
+            return None;
+        }
+        let mv = if ply % 2 == 0 {
+            let l = Limits { depth: None, nodes: Some(nodes), soft_ms: None, hard_ms: None };
+            s.search(&mut p, &l, &mut |_, _| {}).best_move.unwrap()
+        } else {
+            let count = |m: &cozy_chess::Move| {
+                let mut b = p.board.clone();
+                b.play_unchecked(*m);
+                seen.get(&b.hash()).copied().unwrap_or(0)
+            };
+            let best = moves.iter().copied().max_by_key(|m| count(m)).unwrap();
+            if count(&best) > 0 {
+                best
+            } else {
+                rng ^= rng << 13;
+                rng ^= rng >> 7;
+                rng ^= rng << 17;
+                moves[(rng % moves.len() as u64) as usize]
+            }
+        };
+        p.play(mv);
+        let n = seen.entry(p.board.hash()).or_insert(0);
+        *n += 1;
+        if *n >= 3 {
+            return Some(ply);
+        }
+    }
+    None
+}
+
+#[test]
+fn warm_table_does_not_walk_into_threefold_when_winning() {
+    // White is a rook up in a blocked position and Black can only shuffle. With
+    // entries left in the table from earlier moves, White used to repeat.
+    let fen = "4k3/8/1p1p1p1p/pPpPpPpP/P1P1P1P1/8/8/R3K3 w - - 0 1";
+    for seed in 1..=4 {
+        assert_eq!(first_threefold(fen, 60, 300_000, seed), None, "seed {seed}");
+    }
+}
