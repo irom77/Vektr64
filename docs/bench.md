@@ -6,4 +6,4 @@ and changes only when search or evaluation changes. Speed (nps) depends on the m
 
 | Version | Change | Nodes | Laptop nps | Box nps |
 |---|---|---|---|---|
-| 0.1.0 (stage 1) | alpha-beta, quiescence, table, ordering, hand-written eval | 38,791,222 | 5.5M | — |
+| 0.1.0 (stage 1) | alpha-beta, quiescence, table, ordering, hand-written eval | 38,791,222 | 4.4–5.5M | 2.85M |
