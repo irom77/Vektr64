@@ -13,3 +13,5 @@ pub mod search;
 pub mod ordering;
 pub mod tt;
 pub mod time;
+pub mod bench;
+pub mod uci;
