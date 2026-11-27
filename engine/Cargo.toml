@@ -1,0 +1,20 @@
+[package]
+name = "vektr"
+version = "0.1.0"
+edition = "2021"
+description = "Vektr64 chess engine"
+
+[lib]
+name = "vektr"
+path = "src/lib.rs"
+
+[[bin]]
+name = "vektr"
+path = "src/main.rs"
+
+[dependencies]
+cozy-chess = "0.3.4"
+
+[profile.release]
+lto = true
+codegen-units = 1
