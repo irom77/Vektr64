@@ -12,3 +12,4 @@ pub mod eval;
 pub mod search;
 pub mod ordering;
 pub mod tt;
+pub mod time;
