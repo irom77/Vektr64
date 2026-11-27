@@ -8,3 +8,4 @@ pub const MATE: i32 = 30000;
 pub const INF: i32 = 32000;
 /// Maximum search depth in plies.
 pub const MAX_PLY: usize = 128;
+pub mod eval;
