@@ -154,7 +154,7 @@ def play(root: Path, a: Engine, b: Engine, here_nps: int, box_nps: int, runner, 
     return result, pgn, meta
 
 
-def step(store: Store, root: Path, candidate: Version, runner=run_batch) -> dict:
+def step(store: Store, root: Path, candidate: Version, runner=None) -> dict:
     """Play one batch for one candidate, pool it, and settle the test if it is decided."""
     root = Path(root)
     m = load(store)
@@ -178,7 +178,7 @@ def step(store: Store, root: Path, candidate: Version, runner=run_batch) -> dict
     a = Engine("candidate", candidate_bin, dict(ENGINE_OPTIONS))
     b = Engine("champion", champion_bin, dict(ENGINE_OPTIONS))
     try:
-        played = play(root, a, b, here_nps, champion.box_nps or here_nps, runner, name)
+        played = play(root, a, b, here_nps, champion.box_nps or here_nps, runner or run_batch, name)
     except Interrupted as stopped:
         if stopped.result.games:
             upload_batch(store, test, name, stopped.result, stopped.pgn, {"interrupted": True})

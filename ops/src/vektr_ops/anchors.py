@@ -82,7 +82,7 @@ def estimate(totals: dict[int, list[int]]) -> dict:
     }
 
 
-def anchor_step(store: Store, root: Path, version: Version, runner=run_batch) -> dict | None:
+def anchor_step(store: Store, root: Path, version: Version, runner=None) -> dict | None:
     """Play one batch against the least-played anchor; record the rating once all are done.
 
     Returns the running estimate, or None when the version is already measured.
@@ -112,7 +112,9 @@ def anchor_step(store: Store, root: Path, version: Version, runner=run_batch) ->
             },
         )
         try:
-            played = gate.play(root, ours, theirs, here_nps, version.box_nps or here_nps, runner, name)
+            played = gate.play(
+                root, ours, theirs, here_nps, version.box_nps or here_nps, runner or run_batch, name
+            )
         except Interrupted:
             raise KeyboardInterrupt from None  # a partial anchor batch is simply not counted
         if played is None:

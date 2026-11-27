@@ -6,7 +6,7 @@ from helpers import A, B, store_with_champion_and_candidate, store_with_champion
 
 from vektr_ops import gate
 from vektr_ops.gate import batch_name, pooled, step, upload_batch, verdict, work
-from vektr_ops.manifest import load
+from vektr_ops.manifest import load, save
 from vektr_ops.results import BatchResult
 from vektr_ops.store import LocalStore
 
@@ -123,6 +123,27 @@ def test_step_passes_scaled_time_control_and_low_priority(tmp_path, monkeypatch)
     assert (seen["a"], seen["b"]) == ("candidate", "champion")
 
 
-def test_work_with_no_candidates_does_nothing(tmp_path):
+def test_work_with_nothing_open_plays_nothing(tmp_path, monkeypatch):
+    s, m = store_with_champion_only(tmp_path)
+    m.champion_version().anchor = {"elo": 1900.0, "margin": 30.0, "games": 800}
+    save(s, m)
+    monkeypatch.setattr(gate, "run_batch", lambda *a, **k: 1 / 0)
+    work(s, tmp_path, once=True, idle_s=0)
+
+
+def test_work_measures_an_unmeasured_champion(tmp_path, monkeypatch):
     s, _ = store_with_champion_only(tmp_path)
-    work(s, tmp_path, once=True, idle_s=0)  # returns, plays nothing
+    calls = []
+    monkeypatch.setattr(
+        "vektr_ops.anchors.anchor_step", lambda store, root, v: calls.append(v.id) or {"games": 100}
+    )
+    work(s, tmp_path, once=True, idle_s=0)
+    assert calls == [A[:12]]
+
+
+def test_work_advances_every_open_test(tmp_path, monkeypatch):
+    s, _ = store_with_champion_and_candidate(tmp_path)
+    monkeypatch.setattr("vektr_ops.anchors.anchor_step", lambda store, root, v: None)
+    monkeypatch.setattr(gate, "run_batch", lambda *a, **k: (result((5, 20, 50, 20, 5)), "pgn"))
+    work(s, tmp_path, once=True, idle_s=0)
+    assert pooled(s, gate.test_id(A[:12], B[:12]))[1] == 200
