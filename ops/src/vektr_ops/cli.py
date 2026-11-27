@@ -15,6 +15,7 @@ from vektr_ops import manifest
 from vektr_ops.botconfig import load_env, render
 from vektr_ops.sizing import hash_mb
 from vektr_ops.store import Store, StoreUnavailable, open_store
+from vektr_ops.sync import engine_dir
 
 ACCOUNT = "Vektr64"
 SERVICE = "vektr64"
@@ -185,6 +186,25 @@ def rollback() -> None:
 
 
 @app.command()
+def sync() -> None:
+    """On the play machine: follow the manifest's champion and send game records to the store."""
+    from vektr_ops import sync as sync_mod
+    from vektr_ops.match import bot_here
+
+    root = repo_root()
+    store = the_store(root)
+    try:
+        typer.echo(sync_mod.sync(store, root, record_speed=bot_here()))
+    except Exception as error:
+        typer.echo(f"sync failed: {type(error).__name__}: {error}")
+        raise typer.Exit(1)
+    try:
+        typer.echo(f"game records uploaded: {sync_mod.upload_games(store, root)}")
+    except StoreUnavailable as error:
+        typer.echo(f"game records not uploaded: {error}")
+
+
+@app.command()
 def play(
     dry_run: bool = typer.Option(False, "--dry-run", help="Print the bridge config and exit."),
 ) -> None:
@@ -196,13 +216,15 @@ def play(
         typer.echo("error: LICHESS_TOKEN is not set (put it in .env or the environment)")
         raise typer.Exit(2)
 
-    build_engine(root)
+    directory = engine_dir(root)
+    if directory == root / "engine" / "target" / "release":
+        build_engine(root)
 
     template = yaml.safe_load((root / "bot" / "config.template.yml").read_text())
     available_mb = psutil.virtual_memory().available // 2**20
     config = render(
         template,
-        engine_dir=str(root / "engine" / "target" / "release"),
+        engine_dir=str(directory),
         engine_name="vektr",
         hash_mb=hash_mb(available_mb),
     )

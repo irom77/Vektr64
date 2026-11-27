@@ -1,0 +1,13 @@
+[Unit]
+Description=Vektr64: follow the champion in the manifest, upload game records
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=irom
+WorkingDirectory=/home/irom/Vektr64
+EnvironmentFile=/home/irom/Vektr64/.env
+Environment=PATH=/home/irom/.cargo/bin:/home/irom/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/irom/.local/bin/uv run --project ops vektr-ops sync
+Nice=10

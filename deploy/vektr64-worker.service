@@ -1,0 +1,18 @@
+[Unit]
+Description=Vektr64 background worker: gate and anchor matches
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=irom
+WorkingDirectory=/home/irom/Vektr64
+EnvironmentFile=/home/irom/Vektr64/.env
+Environment=PATH=/home/irom/.cargo/bin:/home/irom/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/irom/.local/bin/uv run --project ops vektr-ops gate --work
+Nice=19
+MemoryMax=700M
+Restart=always
+RestartSec=60
+
+[Install]
+WantedBy=multi-user.target

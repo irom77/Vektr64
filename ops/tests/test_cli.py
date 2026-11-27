@@ -64,3 +64,30 @@ def test_store_commands_explain_a_missing_store(monkeypatch, tmp_path):
     monkeypatch.setattr("vektr_ops.cli.repo_root", lambda: tmp_path)
     r = CliRunner().invoke(app, ["rollback"])
     assert r.exit_code == 2 and "HF_TOKEN or VEKTR_STORE" in r.output
+
+
+def test_play_uses_the_followed_champion_when_there_is_one(monkeypatch, tmp_path):
+    import shutil
+
+    from vektr_ops.cli import repo_root
+
+    real = repo_root()
+    (tmp_path / "bot").mkdir()
+    shutil.copy(real / "bot" / "config.template.yml", tmp_path / "bot" / "config.template.yml")
+    build = tmp_path / "builds" / "abc"
+    build.mkdir(parents=True)
+    (build / "vektr").write_bytes(b"x")
+    (tmp_path / "builds" / "current").symlink_to("abc")
+    monkeypatch.setenv("LICHESS_TOKEN", "lip_secret_value")
+    monkeypatch.setattr("vektr_ops.cli.repo_root", lambda: tmp_path)
+    monkeypatch.setattr("vektr_ops.cli.build_engine", lambda root: 1 / 0)  # must not rebuild
+    r = CliRunner().invoke(app, ["play", "--dry-run"])
+    assert r.exit_code == 0 and str(tmp_path / "builds" / "current") in r.output
+
+
+def test_sync_command_reports_a_refusal(monkeypatch, tmp_path):
+    monkeypatch.setenv("VEKTR_STORE", str(tmp_path / "store"))
+    monkeypatch.setattr("vektr_ops.cli.repo_root", lambda: tmp_path)
+    r = CliRunner().invoke(app, ["sync"])
+    assert r.exit_code == 1 and "no champion" in r.output
+    assert (tmp_path / "state" / "sync-error").exists()
