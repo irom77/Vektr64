@@ -7,7 +7,9 @@ use std::time::Instant;
 use cozy_chess::{Board, Move, Piece, Square};
 
 use crate::eval::evaluate;
+use crate::ordering::History;
 use crate::position::Position;
+use crate::tt::{Bound, Entry, TT};
 use crate::{INF, MATE, MAX_PLY};
 
 /// What ends a search. Every field that is `None` places no limit.
@@ -104,10 +106,12 @@ pub struct Searcher {
     root_depth: u32,
     aborted: bool,
     pv: Vec<Vec<Move>>,
+    tt: TT,
+    history: History,
 }
 
 impl Searcher {
-    pub fn new(_hash_mb: usize) -> Searcher {
+    pub fn new(hash_mb: usize) -> Searcher {
         Searcher {
             stop: Arc::new(AtomicBool::new(false)),
             nodes: 0,
@@ -117,6 +121,8 @@ impl Searcher {
             root_depth: 0,
             aborted: false,
             pv: vec![Vec::with_capacity(MAX_PLY); MAX_PLY + 1],
+            tt: TT::new(hash_mb),
+            history: History::new(),
         }
     }
 
@@ -126,7 +132,11 @@ impl Searcher {
         self.stop.clone()
     }
 
-    pub fn new_game(&mut self) {}
+    /// Forgets everything learned from earlier positions.
+    pub fn new_game(&mut self) {
+        self.tt.clear();
+        self.history.clear();
+    }
 
     /// Searches `pos`, calling `on_iter` with the result and elapsed
     /// milliseconds after each completed depth.
@@ -216,11 +226,26 @@ impl Searcher {
         }
 
         let board = pos.board.clone();
+        let hash = board.hash();
+        let mut tt_move = None;
+        if let Some(entry) = self.tt.probe(hash, ply) {
+            tt_move = entry.mv;
+            if ply > 0 && entry.depth as i32 >= depth {
+                let usable = match entry.bound {
+                    Bound::Exact => true,
+                    Bound::Lower => entry.score >= beta,
+                    Bound::Upper => entry.score <= alpha,
+                };
+                if usable {
+                    return entry.score;
+                }
+            }
+        }
+
         let mut list = MoveList::new();
         board.generate_moves(|moves| {
             for mv in moves {
-                let score = if is_capture(&board, mv) { 1000 + capture_score(&board, mv) } else { 0 };
-                list.push(mv, score);
+                list.push(mv, self.history.score(&board, mv, tt_move, ply));
             }
             false
         });
@@ -228,6 +253,8 @@ impl Searcher {
             return if in_check { -(MATE - ply as i32) } else { 0 };
         }
 
+        let alpha_start = alpha;
+        let mut best_move = None;
         let mut best = -INF;
         for i in 0..list.len {
             let mv = list.pick(i);
@@ -246,12 +273,23 @@ impl Searcher {
                     line.clear();
                     line.push(mv);
                     line.extend_from_slice(&tail[0]);
+                    best_move = Some(mv);
                     if score >= beta {
+                        self.history.on_cutoff(&board, mv, ply, depth as u32);
                         break;
                     }
                 }
             }
         }
+
+        let bound = if best >= beta {
+            Bound::Lower
+        } else if best > alpha_start {
+            Bound::Exact
+        } else {
+            Bound::Upper
+        };
+        self.tt.store(hash, ply, Entry { mv: best_move, score: best, depth: depth.min(255) as u8, bound });
         best
     }
 

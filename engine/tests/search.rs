@@ -106,3 +106,25 @@ fn pv_is_a_legal_line_starting_with_best_move() {
         p.play(*m);
     }
 }
+
+#[test]
+fn finds_the_fine_70_key_move() {
+    // Lasker–Reichhelm: only Kb1 wins; needs a working transposition table to reach depth
+    assert_eq!(best("8/k7/3p4/p2P1p2/P2P1P2/8/8/K7 w - - 0 1", 26).0, "a1b1");
+}
+
+#[test]
+fn reaches_depth_7_from_startpos_in_under_one_million_nodes() {
+    let mut p = Position::startpos();
+    let r = Searcher::new(16).search(&mut p, &Limits::depth(7), &mut |_, _| {});
+    assert!(r.nodes < 1_000_000, "nodes = {}", r.nodes);
+}
+
+#[test]
+fn mate_distance_is_exact_with_a_warm_table() {
+    let mut p = Position::from_fen("6k1/5ppp/8/8/8/8/8/R3K3 w - - 0 1").unwrap();
+    let mut s = Searcher::new(16);
+    s.search(&mut p, &Limits::depth(6), &mut |_, _| {});
+    let r = s.search(&mut p, &Limits::depth(6), &mut |_, _| {});
+    assert_eq!(r.score, MATE - 1);
+}
