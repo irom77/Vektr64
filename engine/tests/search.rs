@@ -109,8 +109,14 @@ fn pv_is_a_legal_line_starting_with_best_move() {
 
 #[test]
 fn finds_the_fine_70_key_move() {
-    // Lasker–Reichhelm: only Kb1 wins; needs a working transposition table to reach depth
-    assert_eq!(best("8/k7/3p4/p2P1p2/P2P1P2/8/8/K7 w - - 0 1", 26).0, "a1b1");
+    // Lasker–Reichhelm: only Kb1 wins; needs a working transposition table to reach depth.
+    // Every table size from 1 to 64 MiB settles on Kb1 by depth 30; shallower depths
+    // flip between Kb1 and Kb2 depending on which entries were overwritten.
+    let mut p = Position::from_fen("8/k7/3p4/p2P1p2/P2P1P2/8/8/K7 w - - 0 1").unwrap();
+    let r = Searcher::new(64).search(&mut p, &Limits::depth(30), &mut |_, _| {});
+    assert_eq!(p.move_to_uci(r.best_move.unwrap()), "a1b1");
+    assert!(r.score > 250, "score = {}", r.score);
+    assert!(r.nodes < 20_000_000, "nodes = {}", r.nodes);
 }
 
 #[test]
