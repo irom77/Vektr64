@@ -120,7 +120,7 @@ impl Searcher {
             node_limit: None,
             root_depth: 0,
             aborted: false,
-            pv: vec![Vec::with_capacity(MAX_PLY); MAX_PLY + 1],
+            pv: (0..=MAX_PLY).map(|_| Vec::with_capacity(MAX_PLY)).collect(),
             tt: TT::new(hash_mb),
             history: History::new(),
         }
