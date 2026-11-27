@@ -35,6 +35,9 @@ def ensure_build(root: Path, commit: str) -> Path:
     if binary.exists():
         return binary
     source = home / "src"
+    known = subprocess.run(["git", "cat-file", "-e", f"{commit}^{{commit}}"], cwd=root, capture_output=True)
+    if known.returncode != 0:  # promoted elsewhere: this checkout has not fetched it yet
+        subprocess.run(["git", "fetch", "--quiet", "origin"], cwd=root, capture_output=True)
     try:
         source.mkdir(parents=True, exist_ok=True)
         archive = subprocess.run(
