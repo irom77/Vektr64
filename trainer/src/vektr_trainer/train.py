@@ -73,10 +73,16 @@ def _validation_loss(net: Net, data, weight: float, batch: int) -> float | None:
     return total / n
 
 
-def _save_checkpoint(path: Path, net, opt, steps: int, elapsed: float, train_loss) -> None:
+def _fingerprint(shards: Path, total: int, n_train: int, holdout: float) -> str:
+    """Identifies the data split, so a resume cannot train on what an earlier run held out."""
+    files = [[p.name, p.stat().st_size] for p in sorted(Path(shards).glob("*.npz"))]
+    return json.dumps({"shards": files, "total": total, "n_train": n_train, "holdout": holdout})
+
+
+def _save_checkpoint(path: Path, net, opt, steps: int, elapsed: float, train_loss, fingerprint: str) -> None:
     tmp = path.with_name(path.name + ".tmp")
     torch.save(
-        {"model": net.state_dict(), "optimiser": opt.state_dict(), "steps": steps, "elapsed": elapsed, "train_loss": train_loss},
+        {"model": net.state_dict(), "optimiser": opt.state_dict(), "steps": steps, "elapsed": elapsed, "train_loss": train_loss, "fingerprint": fingerprint},
         tmp,
     )
     os.replace(tmp, path)
@@ -95,6 +101,7 @@ def train(shards: Path, out: Path, cfg: Config, *, device: str | None = None, cl
     train_data = (features[:n_train], stm[:n_train], score[:n_train], result[:n_train])
     val_data = (features[n_train:], stm[n_train:], score[n_train:], result[n_train:])
 
+    fingerprint = _fingerprint(shards, total, n_train, cfg.holdout)
     torch.manual_seed(cfg.seed)
     net = Net().to(device)
     net.clip_()
@@ -103,6 +110,11 @@ def train(shards: Path, out: Path, cfg: Config, *, device: str | None = None, cl
     checkpoint = out / "checkpoint.pt"
     if checkpoint.exists():
         state = torch.load(checkpoint, map_location=device, weights_only=True)
+        if state["fingerprint"] != fingerprint:
+            raise ValueError(
+                f"checkpoint {checkpoint} was made with different data or holdout: "
+                f"{state['fingerprint']} != {fingerprint}"
+            )
         net.load_state_dict(state["model"])
         opt.load_state_dict(state["optimiser"])
         steps, elapsed, train_loss = int(state["steps"]), float(state["elapsed"]), state["train_loss"]
@@ -135,11 +147,11 @@ def train(shards: Path, out: Path, cfg: Config, *, device: str | None = None, cl
         start = now
         if now - last_checkpoint >= cfg.checkpoint_s:
             train_loss = torch.stack(recent).mean().item()
-            _save_checkpoint(checkpoint, net, opt, steps, elapsed, train_loss)
+            _save_checkpoint(checkpoint, net, opt, steps, elapsed, train_loss, fingerprint)
             last_checkpoint = now
     if recent:
         train_loss = torch.stack(recent).mean().item()
-    _save_checkpoint(checkpoint, net, opt, steps, elapsed, train_loss)
+    _save_checkpoint(checkpoint, net, opt, steps, elapsed, train_loss, fingerprint)
 
     qnet = quantise(net)
     vknn.write(out / "net.vknn", qnet)

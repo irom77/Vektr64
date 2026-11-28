@@ -1,4 +1,5 @@
 import itertools
+import math
 
 import numpy as np
 import pytest
@@ -64,8 +65,13 @@ def test_a_second_run_resumes_from_the_checkpoint(shards, tmp_path):
     a = train(shards, tmp_path, cfg(0.5), device="cpu", clock=fake_clock())
     b = train(shards, tmp_path, cfg(1.0), device="cpu", clock=fake_clock())
     assert b["steps"] > a["steps"] and b["elapsed_s"] >= 60
+    trained = (tmp_path / "net.vknn").read_bytes()
+    state = torch.load(tmp_path / "checkpoint.pt", weights_only=True)
+    expected_lr = 1e-5 + (1e-3 - 1e-5) * 0.5 * (1 + math.cos(math.pi * (state["elapsed"] - 1) / 60))
+    assert state["optimiser"]["param_groups"][0]["lr"] == pytest.approx(expected_lr)
     c = train(shards, tmp_path, cfg(1.0), device="cpu", clock=fake_clock())
     assert c["steps"] == b["steps"]
+    assert (tmp_path / "net.vknn").read_bytes() == trained  # weights came from the checkpoint
 
 
 def test_a_damaged_checkpoint_is_an_error_not_a_silent_restart(shards, tmp_path):
@@ -83,3 +89,12 @@ def test_no_shards_is_an_error(tmp_path):
     (tmp_path / "empty").mkdir()
     with pytest.raises(ValueError):
         train(tmp_path / "empty", tmp_path / "out", cfg(0.1), device="cpu", clock=fake_clock())
+
+
+def test_resuming_with_different_data_or_holdout_is_refused(shards, tmp_path):
+    train(shards, tmp_path / "out", cfg(0.1), device="cpu", clock=fake_clock())
+    other = make_shards(tmp_path / "other", n=4096)
+    with pytest.raises(ValueError, match="checkpoint"):
+        train(other, tmp_path / "out", cfg(0.2), device="cpu", clock=fake_clock())
+    with pytest.raises(ValueError, match="checkpoint"):
+        train(shards, tmp_path / "out", cfg(0.2, holdout=0.05), device="cpu", clock=fake_clock())
