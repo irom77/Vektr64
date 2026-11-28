@@ -214,6 +214,23 @@ def rollback() -> None:
 
 
 @app.command()
+def prep(
+    positions: int = typer.Option(30_000_000, "--positions", help="Positions to prepare, in whole shards."),
+) -> None:
+    """Turn the Lichess evaluation database into training shards in the data store."""
+    from vektr_ops import data
+
+    root = repo_root()
+    store = the_store(root)
+    try:
+        uploaded = data.run_prep(store, root, positions=positions)
+    except (ValueError, subprocess.CalledProcessError) as error:
+        typer.echo(f"error: {error}")
+        raise typer.Exit(2)
+    typer.echo(f"shards uploaded: {uploaded}")
+
+
+@app.command()
 def sync() -> None:
     """On the play machine: follow the manifest's champion and send game records to the store."""
     from vektr_ops import sync as sync_mod
