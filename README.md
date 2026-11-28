@@ -7,6 +7,7 @@ on a minimal budget.
 - **Design:** [docs/superpowers/specs/2026-11-27-vektr64-design.md](docs/superpowers/specs/2026-11-27-vektr64-design.md)
 - **Stage 1 plan (the engine plays):** [docs/superpowers/plans/2026-11-27-stage1-engine-plays.md](docs/superpowers/plans/2026-11-27-stage1-engine-plays.md)
 - **Stage 2 plan (measuring tools):** [docs/superpowers/plans/2026-11-27-stage2-measuring-tools.md](docs/superpowers/plans/2026-11-27-stage2-measuring-tools.md)
+- **Stage 3 plan (the first network):** [docs/superpowers/plans/2026-11-28-stage3-first-network.md](docs/superpowers/plans/2026-11-28-stage3-first-network.md)
 - **Runbook:** [docs/runbook.md](docs/runbook.md)
 - **Bench baselines:** [docs/bench.md](docs/bench.md)
 
@@ -15,9 +16,10 @@ on a minimal budget.
 | Path | What |
 |---|---|
 | `engine/` | The engine (Rust). One binary, `vektr`: a UCI engine, plus `vektr bench` |
+| `trainer/` | The network trainer (Python, PyTorch): data preparation, training, and the network file writer |
 | `ops/` | `vektr-ops`, the Python CLI that runs and inspects the bot |
 | `bot/` | The pinned [lichess-bot](https://github.com/lichess-bot-devs/lichess-bot) bridge and its settings |
-| `deploy/` | systemd unit and machine setup script |
+| `deploy/` | systemd units, machine setup script, and `burst.sh` (what a rented training pod runs) |
 
 ## Running it
 
@@ -55,6 +57,19 @@ uv run --project ops vektr-ops page             # write the status page to site/
 uv run --project ops vektr-ops sync             # play machine only: follow the champion
 ```
 
+Training a network (needs `HF_TOKEN`, and `RUNPOD_API_KEY` for bursts, ideally with `HF_BURST_TOKEN`, a fine-grained token that is the only one sent to the pod; see the runbook):
+
+```bash
+uv run --project ops vektr-ops prep --positions 30000000     # prepare training shards in the data store
+uv run --project ops vektr-ops train --run ID --minutes M    # train on this machine
+uv run --project ops vektr-ops burst --minutes 45 --run ID   # train on a rented GPU that deletes itself
+uv run --project ops vektr-ops burst --minutes 45 --cloud community   # cheaper, third-party hosts (default: secure)
+uv run --project ops vektr-ops burst --list                  # pods this tool started
+uv run --project ops vektr-ops burst --kill                  # delete them all
+uv run --project ops vektr-ops burst --local --minutes M     # dry run of the burst script here, no RunPod
+uv run --project ops vektr-ops install-net ID                # make a trained network the engine's default
+```
+
 Nothing is edited per machine. `vektr-ops play` builds the engine, sizes its hash table
 from the memory available, and writes `bot/config.yml` from `bot/config.template.yml`.
 The bridge runs from `bot/lichess-bot/.venv`, which the install script creates from the
@@ -64,5 +79,7 @@ bridge's `requirements.txt`.
 
 ```bash
 (cd engine && cargo test --release)
+uv run --project trainer pytest trainer/tests
 uv run --project ops pytest ops/tests
+uv run --project ops pytest ops/tests -m slow   # the burst dry run (trains for a few seconds on CPU)
 ```

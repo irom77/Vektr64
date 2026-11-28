@@ -1,6 +1,7 @@
 """Engine binaries built from a given commit, kept side by side in `builds/<id>/`."""
 
 import fcntl
+import hashlib
 import re
 import shutil
 import subprocess
@@ -30,6 +31,32 @@ def bench_nps(binary: Path) -> int:
     """Search speed of a build on this machine, from its fixed-depth bench."""
     done = subprocess.run([str(binary), "bench", "8"], capture_output=True, text=True, timeout=600)
     return parse_bench(done.stdout)[1]
+
+
+def netcheck(binary: Path) -> bool:
+    """True when the build's compiled-in network matches its check file.
+
+    The command gets no input: an engine without `netcheck` falls into its UCI loop and is
+    ended by the empty stdin (or the time limit), and never prints the ok line.
+    """
+    try:
+        done = subprocess.run(
+            [str(binary), "netcheck"], input="", capture_output=True, text=True, timeout=60
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    ok = re.match(r"netcheck ok (\d+) positions", done.stdout)
+    return done.returncode == 0 and ok is not None and int(ok.group(1)) > 0
+
+
+def net_hash(root: Path, commit: str) -> str | None:
+    """First 16 hex of the SHA-256 of the default network at `commit`; None if it has none."""
+    shown = subprocess.run(
+        ["git", "show", f"{commit}:engine/nets/default.vknn"], cwd=root, capture_output=True
+    )
+    if shown.returncode != 0:
+        return None
+    return hashlib.sha256(shown.stdout).hexdigest()[:16]
 
 
 def ensure_build(root: Path, commit: str) -> Path:

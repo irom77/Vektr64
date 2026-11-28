@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use cozy_chess::{Board, Move, Piece, Square};
 
-use crate::eval::evaluate;
+use crate::nnue::{Accumulator, Network};
 use crate::ordering::History;
 use crate::position::Position;
 use crate::tt::{Bound, Entry, TT};
@@ -108,10 +108,15 @@ pub struct Searcher {
     pv: Vec<Vec<Move>>,
     tt: TT,
     history: History,
+    net: Arc<Network>,
+    /// One accumulator per ply, allocated once; `accs[ply]` matches the position at `ply`.
+    accs: Vec<Accumulator>,
 }
 
 impl Searcher {
     pub fn new(hash_mb: usize) -> Searcher {
+        let net = Network::embedded();
+        let blank = Accumulator::refresh(&net, &Board::default());
         Searcher {
             stop: Arc::new(AtomicBool::new(false)),
             nodes: 0,
@@ -123,7 +128,27 @@ impl Searcher {
             pv: (0..=MAX_PLY).map(|_| Vec::with_capacity(MAX_PLY)).collect(),
             tt: TT::new(hash_mb),
             history: History::new(),
+            accs: vec![blank; MAX_PLY + 1],
+            net,
         }
+    }
+
+    /// Evaluates with `net` from the next search on.
+    pub fn set_network(&mut self, net: Arc<Network>) {
+        self.net = net;
+    }
+
+    /// Static evaluation of the position at `ply`, from the side to move's view.
+    fn eval(&self, ply: usize, board: &Board) -> i32 {
+        let score = self.net.evaluate(&self.accs[ply], board.side_to_move());
+        debug_assert_eq!(score, self.net.evaluate_board(board), "incremental accumulator diverged at ply {ply}");
+        score
+    }
+
+    /// Derives the accumulator at `ply + 1` from the one at `ply`.
+    fn push(&mut self, ply: usize, before: &Board, after: &Board) {
+        let (head, tail) = self.accs.split_at_mut(ply + 1);
+        tail[0].update_from(&head[ply], &self.net, before, after);
     }
 
     /// Setting this flag ends the running search. The caller clears it before
@@ -152,6 +177,7 @@ impl Searcher {
         self.hard_ms = limits.hard_ms;
         self.node_limit = limits.nodes;
 
+        self.accs[0] = Accumulator::refresh(&self.net, &pos.board);
         let in_check = !pos.board.checkers().is_empty();
         let mut result = SearchResult {
             best_move: None,
@@ -216,7 +242,7 @@ impl Searcher {
             return 0;
         }
         if ply >= MAX_PLY - 1 {
-            return evaluate(&pos.board);
+            return self.eval(ply, &pos.board);
         }
         let in_check = !pos.board.checkers().is_empty();
         if in_check {
@@ -264,6 +290,7 @@ impl Searcher {
         for i in 0..list.len {
             let mv = list.pick(i);
             pos.play(mv);
+            self.push(ply, &board, &pos.board);
             let score = -self.negamax(pos, depth - 1, ply + 1, -beta, -alpha);
             pos.undo_to(board.clone());
             if self.aborted {
@@ -306,14 +333,14 @@ impl Searcher {
             return 0;
         }
         if ply >= MAX_PLY - 1 {
-            return evaluate(&pos.board);
+            return self.eval(ply, &pos.board);
         }
 
         let board = pos.board.clone();
         let in_check = !board.checkers().is_empty();
         let mut best = -INF;
         if !in_check {
-            best = evaluate(&board);
+            best = self.eval(ply, &board);
             if best >= beta {
                 return best;
             }
@@ -341,6 +368,7 @@ impl Searcher {
         for i in 0..list.len {
             let mv = list.pick(i);
             pos.play(mv);
+            self.push(ply, &board, &pos.board);
             let score = -self.quiescence(pos, ply + 1, -beta, -alpha);
             pos.undo_to(board.clone());
             if self.aborted {

@@ -20,3 +20,5 @@ packages = ["src/vektr_ops"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow"]
+addopts = "-m 'not slow'"

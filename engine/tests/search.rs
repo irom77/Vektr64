@@ -116,7 +116,8 @@ fn finds_the_fine_70_key_move() {
     let r = Searcher::new(64).search(&mut p, &Limits::depth(30), &mut |_, _| {});
     assert_eq!(p.move_to_uci(r.best_move.unwrap()), "a1b1");
     assert!(r.score > 250, "score = {}", r.score);
-    assert!(r.nodes < 20_000_000, "nodes = {}", r.nodes);
+    // 20M with the hand-written evaluation; 98.2M measured with the bootstrap network.
+    assert!(r.nodes < 150_000_000, "nodes = {}", r.nodes);
 }
 
 #[test]
@@ -186,5 +187,103 @@ fn warm_table_does_not_walk_into_threefold_when_winning() {
     let fen = "4k3/8/1p1p1p1p/pPpPpPpP/P1P1P1P1/8/8/R3K3 w - - 0 1";
     for seed in 1..=4 {
         assert_eq!(first_threefold(fen, 60, 300_000, seed), None, "seed {seed}");
+    }
+}
+
+#[test]
+fn a_position_scores_the_same_however_it_was_reached() {
+    let mut played = Position::startpos();
+    for m in ["e2e4", "e7e5", "g1f3", "b8c6"] {
+        played.play_uci(m).unwrap();
+    }
+    let mut parsed =
+        Position::from_fen("r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3").unwrap();
+    let a = Searcher::new(16).search(&mut played, &Limits::depth(5), &mut |_, _| {});
+    let b = Searcher::new(16).search(&mut parsed, &Limits::depth(5), &mut |_, _| {});
+    assert_eq!((a.score, a.nodes), (b.score, b.nodes));
+}
+
+/// The embedded network with every feature weight halved: a different network whose
+/// accumulators differ from the embedded one's.
+fn halved_net() -> std::sync::Arc<vektr::nnue::Network> {
+    let mut bytes = vektr::nnue::DEFAULT_NET.to_vec();
+    for w in bytes[12..12 + vektr::nnue::INPUTS * vektr::nnue::HIDDEN * 2].chunks_exact_mut(2) {
+        let v = i16::from_le_bytes([w[0], w[1]]) / 2;
+        w.copy_from_slice(&v.to_le_bytes());
+    }
+    std::sync::Arc::new(vektr::nnue::Network::from_bytes(&bytes).unwrap())
+}
+
+const TACTICAL: [&str; 4] = [
+    "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+    "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1",
+    "1n2k3/P7/8/8/8/8/7p/4K1N1 w - - 0 1",
+    "r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 0 1",
+];
+
+fn run(s: &mut Searcher, fen: &str, depth: u32) -> (i32, u64) {
+    let mut p = Position::from_fen(fen).unwrap();
+    let r = s.search(&mut p, &Limits::depth(depth), &mut |_, _| {});
+    (r.score, r.nodes)
+}
+
+#[test]
+fn a_reused_searcher_matches_a_fresh_one() {
+    let mut reused = Searcher::new(16);
+    for (i, fen) in TACTICAL.iter().enumerate() {
+        reused.new_game();
+        let fresh = run(&mut Searcher::new(16), fen, 4);
+        assert_eq!(run(&mut reused, fen, 4), fresh, "position {i}");
+    }
+}
+
+#[test]
+fn a_new_network_is_used_from_the_next_search() {
+    let net = halved_net();
+    let mut reused = Searcher::new(16);
+    for (i, fen) in TACTICAL.iter().enumerate() {
+        run(&mut reused, fen, 3);
+        reused.set_network(net.clone());
+        reused.new_game();
+        let mut fresh = Searcher::new(16);
+        fresh.set_network(net.clone());
+        assert_eq!(run(&mut reused, fen, 4), run(&mut fresh, fen, 4), "position {i}");
+        reused.set_network(vektr::nnue::Network::embedded());
+    }
+}
+
+/// With debug assertions on (plain `cargo test`) every static evaluation in the search is
+/// checked against a from-scratch evaluation of the board.
+#[test]
+fn incremental_accumulators_match_refresh_at_every_node() {
+    for fen in TACTICAL {
+        run(&mut Searcher::new(16), fen, 4);
+    }
+}
+
+/// With no captures anywhere, a depth-1 search is the best of `-evaluate_board(child)`,
+/// computed here from scratch, so a stale or missing root accumulator shows even in release.
+#[test]
+fn depth_one_equals_the_best_child_evaluated_from_scratch() {
+    let net = vektr::nnue::Network::embedded();
+    for fen in ["4k3/8/8/8/8/8/4P3/4K3 w - - 0 1", "4k3/8/8/8/8/8/8/R3K3 b - - 0 1", "4k3/p7/8/8/8/8/8/1N2K3 w - - 0 1"] {
+        let mut p = Position::from_fen(fen).unwrap();
+        let expected = p
+            .legal_moves()
+            .iter()
+            .map(|&m| {
+                let mut c = p.clone();
+                c.play(m);
+                -net.evaluate_board(&c.board)
+            })
+            .max()
+            .unwrap();
+        let mut s = Searcher::new(16);
+        // Searched twice so the second run also starts from a root left over by the first.
+        for _ in 0..2 {
+            let r = s.search(&mut p, &Limits::depth(1), &mut |_, _| {});
+            assert_eq!(r.score, expected, "{fen}");
+            s.new_game();
+        }
     }
 }

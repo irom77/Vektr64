@@ -89,15 +89,22 @@ def version_id(engine_commit: str, net: str | None = None) -> str:
     return engine_commit[:12]
 
 
-def add_candidate(m: Manifest, engine_commit: str, now: str) -> Version:
+def add_candidate(m: Manifest, engine_commit: str, now: str, net: str | None = None) -> Version:
     """Register a commit as a candidate; returns the existing version if already known."""
     id = version_id(engine_commit)
     try:
         return m.get(id)
     except KeyError:
-        version = Version(id=id, engine_commit=engine_commit, created=now)
+        version = Version(id=id, engine_commit=engine_commit, net=net, created=now)
         m.versions.append(version)
         return version
+
+
+def usable_ratio(value) -> float | None:
+    """A recorded speed ratio as a number, or None unless it is a real one in 0.1 to 1.0."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if 0.1 <= value <= 1.0 else None  # False for NaN too
 
 
 def promote(m: Manifest, id: str, *, bootstrap: bool = False) -> None:

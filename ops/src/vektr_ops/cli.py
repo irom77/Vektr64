@@ -10,6 +10,7 @@ import psutil
 import typer
 import yaml
 
+from vektr_ops import builds
 from vektr_ops import gate as gate_mod
 from vektr_ops import manifest
 from vektr_ops.botconfig import load_env, render
@@ -20,7 +21,8 @@ from vektr_ops.sync import engine_dir
 ACCOUNT = "Vektr64"
 SERVICE = "vektr64"
 
-app = typer.Typer(no_args_is_help=True, add_completion=False)
+# Tracebacks never show local variables: they would print tokens held in them.
+app = typer.Typer(no_args_is_help=True, add_completion=False, pretty_exceptions_show_locals=False)
 
 
 def repo_root() -> Path:
@@ -103,7 +105,17 @@ def gate(
     if manifest.load(store).champion is None:
         typer.echo("error: there is no champion yet; run `vektr-ops promote <ref> --bootstrap`")
         raise typer.Exit(2)
-    candidate = manifest.update(store, lambda m: manifest.add_candidate(m, commit, utc_now()))
+    net = builds.net_hash(root, commit)
+    if net is not None:
+        try:
+            binary = builds.ensure_build(root, commit)
+        except builds.BuildFailed as error:
+            typer.echo(f"error: {commit[:12]} does not build\n{str(error)[-500:]}")
+            raise typer.Exit(2)
+        if not builds.netcheck(binary):
+            typer.echo("error: engine and trainer disagree on the network")
+            raise typer.Exit(2)
+    candidate = manifest.update(store, lambda m: manifest.add_candidate(m, commit, utc_now(), net))
     if candidate.status == "champion":
         typer.echo(f"{candidate.id} is already the champion")
         return
@@ -211,6 +223,226 @@ def rollback() -> None:
         typer.echo(f"error: {error}")
         raise typer.Exit(2)
     typer.echo(f"champion: {restored.id}")
+
+
+@app.command()
+def prep(
+    positions: int = typer.Option(30_000_000, "--positions", help="Positions to prepare, in whole shards."),
+) -> None:
+    """Turn the Lichess evaluation database into training shards in the data store."""
+    from vektr_ops import data
+
+    root = repo_root()
+    store = the_store(root)
+    try:
+        uploaded = data.run_prep(store, root, positions=positions)
+    except (ValueError, subprocess.CalledProcessError) as error:
+        typer.echo(f"error: {error}")
+        raise typer.Exit(2)
+    typer.echo(f"shards uploaded: {uploaded}")
+
+
+@app.command()
+def train(
+    run: str = typer.Option(..., "--run", help="Run id; an existing run resumes from its checkpoint."),
+    minutes: float = typer.Option(..., "--minutes", help="Training time budget in minutes."),
+    shards: int = typer.Option(None, "--shards", help="Use only the first N shards."),
+) -> None:
+    """Train a network on the prepared shards; checkpoints and results go to the store."""
+    from vektr_ops import training
+
+    root = repo_root()
+    store = the_store(root)
+    try:
+        record = training.run_training(store, root, run, minutes=minutes, shards=shards, env=load_env(root))
+    except (RuntimeError, ValueError, OSError, StoreUnavailable) as error:
+        typer.echo(f"error: {error}")
+        raise typer.Exit(1)
+    typer.echo(f"net: {record['net']} val_loss={record.get('val_loss')} stored as runs/{run}/")
+
+
+def runpod_api():
+    """The RunPod client module; tests replace this with a fake."""
+    from vektr_ops import runpod
+
+    return runpod
+
+
+@app.command()
+def burst(
+    minutes: float = typer.Option(None, "--minutes", help="Training time budget in minutes."),
+    run: str = typer.Option(None, "--run", help="Run id; an existing run resumes from its checkpoint."),
+    max_rate: float = typer.Option(None, "--max-rate", help="Highest acceptable price, USD per hour."),
+    yes: bool = typer.Option(False, "--yes", help="Do not ask before the pod starts working."),
+    list_pods: bool = typer.Option(False, "--list", help="List the pods this tool started."),
+    kill: bool = typer.Option(False, "--kill", help="Delete every pod this tool started."),
+    local: bool = typer.Option(False, "--local", help="Run the burst script on this machine; no RunPod."),
+    cloud: str = typer.Option("secure", "--cloud", help="RunPod cloud: secure (default) or community."),
+) -> None:
+    """Rent a GPU pod that trains a network, uploads it and always deletes itself."""
+    from vektr_ops import burst as burst_mod
+
+    root = repo_root()
+    env = load_env(root)
+    if local:
+        if minutes is None:
+            typer.echo("error: give --minutes")
+            raise typer.Exit(2)
+        run = run or "local-" + utc_now().replace(":", "").replace("-", "")
+        done = subprocess.run(
+            ["bash", str(root / "deploy" / "burst.sh")],
+            cwd=root,
+            env={**env, "VEKTR_LOCAL": "1", "VEKTR_RUN": run, "VEKTR_MINUTES": str(minutes)},
+        )
+        raise typer.Exit(done.returncode)
+
+    key = env.get("RUNPOD_API_KEY", "")
+    if not key:
+        typer.echo(
+            "error: RUNPOD_API_KEY is not set. Create a key at https://www.runpod.io/console/user/settings "
+            "(API Keys, pods read and write) and put it in .env"
+        )
+        raise typer.Exit(2)
+    api = runpod_api()
+    if list_pods or kill:
+        pods = [p for p in api.list_pods(key) if str(p.get("name", "")).startswith(burst_mod.NAME_PREFIX)]
+        if list_pods:
+            for p in pods:
+                typer.echo(f"{p['id']}  {p.get('name')}  {p.get('status')}  ${p.get('cost')}/h")
+            if not pods:
+                typer.echo("no pods")
+        else:
+            killed, failed = burst_mod.kill_all(key, api=api)
+            typer.echo(f"deleted: {', '.join(killed)}" if killed else "no pods")
+            if failed:
+                typer.echo(f"error: could not delete: {', '.join(failed)}; check the RunPod console", err=True)
+                raise typer.Exit(1)
+        return
+
+    if minutes is None:
+        typer.echo("error: give --minutes (or --list, --kill, --local)")
+        raise typer.Exit(2)
+    cloud = cloud.upper()
+    if cloud not in ("SECURE", "COMMUNITY"):
+        typer.echo("error: --cloud must be secure or community")
+        raise typer.Exit(2)
+    burst_token = env.get("HF_BURST_TOKEN", "")
+    token = burst_token or env.get("HF_TOKEN", "")
+    if not token:
+        typer.echo("error: HF_TOKEN is not set; the pod needs it to read the data and store the network")
+        raise typer.Exit(2)
+    commit = resolve_commit(root, "HEAD")
+    if not is_pushed(root, commit):
+        typer.echo(f"error: {commit[:12]} is not on origin; push it first so the pod can fetch it")
+        raise typer.Exit(2)
+    run = run or "burst-" + utc_now().replace(":", "").replace("-", "")
+    rate_cap = burst_mod.MAX_RATE if max_rate is None else max_rate
+    hard_s = burst_mod.hard_limit(minutes)
+    if not burst_token:
+        typer.echo(
+            "note: the pod gets your full HF_TOKEN; set HF_BURST_TOKEN to a fine-grained token "
+            "limited to the two vektr64-* repos"
+        )
+    bodies = [burst_mod.pod_body(run, commit, minutes, token, gpu, cloud) for gpu in burst_mod.GPUS]
+    try:
+        pod = burst_mod.launch(key, bodies, max_rate=rate_cap, api=api)
+    except burst_mod.BurstFailed as error:
+        typer.echo(f"error: {error}")
+        raise typer.Exit(1)
+
+    pod_id = pod["id"]
+    gone = False
+    try:
+        rate = float(pod["cost"])
+        typer.echo(f"pod {pod_id}: {pod.get('gpu', {}).get('id') or bodies[0]['gpu']['id']}, ${rate:.2f}/h, {cloud} cloud")
+        typer.echo(f"worst case ${rate * hard_s / 3600:.2f} (the pod removes itself after {hard_s // 60} minutes)")
+        if not yes and not typer.confirm("continue?", default=False):
+            typer.echo("cancelled; deleting the pod")
+            raise typer.Exit(1)
+        outcome = burst_mod.watch(key, pod_id, hard_s, api=api)
+        gone = outcome == "gone" or outcome.startswith("deleted")
+        typer.echo(f"pod {outcome}")
+    finally:
+        if not gone:
+            try:
+                api.delete_pod(key, pod_id)
+            except Exception as error:
+                typer.echo(f"WARNING: could not delete pod {pod_id} ({error}); run `vektr-ops burst --kill`", err=True)
+    try:
+        finished = the_store(root).read_bytes("nets", f"runs/{run}/net.vknn") is not None
+    except typer.Exit:
+        finished = False
+    if not finished:
+        _show_burst_log(root, run)
+        typer.echo(f"error: the pod is gone but run {run} has no network in the store; start again with --run {run}")
+        raise typer.Exit(1)
+    typer.echo(f"network ready: vektr-ops install-net {run}")
+
+
+def _show_burst_log(root: Path, run: str) -> None:
+    """Print the failed pod's own output (`runs/<run>/burst.log`) when it left one in the store."""
+    from vektr_ops import burst as burst_mod
+
+    try:
+        env = load_env(root)
+        raw = open_store(env).read_bytes("nets", f"runs/{run}/burst.log")
+    except Exception:
+        return
+    if raw:
+        typer.echo(f"--- runs/{run}/burst.log ---")
+        typer.echo(burst_mod.redact(raw.decode(errors="replace"), env).rstrip())
+        typer.echo("--- end of burst.log ---")
+
+
+@app.command("burst-log")
+def burst_log(
+    file: Path = typer.Argument(..., help="The text to upload: the tail of a pod's output."),
+    run: str = typer.Option(..., "--run", help="Run id; the text goes to nets:runs/<run>/burst.log."),
+) -> None:
+    """Upload a failed burst's output to the store, with every token value replaced by ***."""
+    from vektr_ops import burst as burst_mod
+
+    root = repo_root()
+    env = load_env(root)
+    try:
+        text = burst_mod.redact(file.read_text(errors="replace"), env)
+        open_store(env).write_bytes("nets", f"runs/{run}/burst.log", text.encode(), overwrite=True)
+    except (OSError, StoreUnavailable) as error:
+        typer.echo(f"error: {error}")
+        raise typer.Exit(1)
+
+
+def engine_check(root: Path) -> list[str]:
+    """Build the engine and run its network check; returns the failure lines, empty when it passes."""
+    try:
+        build_engine(root)
+    except typer.Exit:
+        return ["engine build failed"]
+    done = subprocess.run(
+        [str(root / "engine" / "target" / "release" / "vektr"), "netcheck"],
+        capture_output=True, text=True,
+    )
+    if done.returncode == 0:
+        return []
+    return (done.stdout + done.stderr).strip().splitlines() or [f"netcheck exited {done.returncode}"]
+
+
+@app.command("install-net")
+def install_net(run: str = typer.Argument(..., help="Run id whose network becomes the default.")) -> None:
+    """Install a trained network into the engine, build it and check it against the reference."""
+    from vektr_ops import training
+
+    root = repo_root()
+    store = the_store(root)
+    try:
+        net = training.install_net(store, root, run, check=engine_check)
+    except KeyError as error:
+        typer.echo(f"error: {error.args[0]}")
+        raise typer.Exit(2)
+    except training.NetCheckFailed as error:
+        typer.echo(f"error: network {run} failed the check; the engine's network is unchanged\n{error}", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"installed {net}")
 
 
 @app.command()

@@ -138,3 +138,80 @@ fn bench_is_deterministic() {
     assert!(a.lines().last().unwrap().ends_with(" nps"));
     assert_eq!(nodes(&a), nodes(&b));
 }
+
+fn last_cp(out: &str) -> i32 {
+    let line = out.lines().rev().find(|l| l.starts_with("info depth") && l.contains(" score cp ")).unwrap();
+    let mut it = line.split(' ').skip_while(|&t| t != "cp");
+    it.nth(1).unwrap().parse().unwrap()
+}
+
+/// The embedded network with its output bias raised by 255 * 64, which moves every
+/// evaluation (from the side to move's view) up by 400 centipawns.
+fn raised_net_file(tag: &str) -> String {
+    let mut bytes = vektr::nnue::DEFAULT_NET.to_vec();
+    let n = bytes.len();
+    let bias = i32::from_le_bytes(bytes[n - 4..].try_into().unwrap()) + 255 * 64;
+    bytes[n - 4..].copy_from_slice(&bias.to_le_bytes());
+    let path = std::env::temp_dir().join(format!("vektr-test-{}-{tag}.vknn", std::process::id()));
+    std::fs::write(&path, bytes).unwrap();
+    path.to_str().unwrap().to_string()
+}
+
+#[test]
+fn evalfile_is_advertised() {
+    let (out, _) = session("uci\nquit\n", 0);
+    assert!(out.contains("option name EvalFile type string"));
+}
+
+#[test]
+fn a_missing_evalfile_is_reported_and_the_engine_still_moves() {
+    let (out, _) = session(
+        "setoption name EvalFile value /no/such/file\nposition startpos\ngo depth 2\n",
+        500,
+    );
+    assert!(out.lines().any(|l| l.starts_with("info string error")));
+    assert!(out.lines().any(|l| l.starts_with("bestmove ") && !l.contains("0000")));
+}
+
+#[test]
+fn a_truncated_evalfile_is_reported_and_the_engine_still_moves() {
+    let path = std::env::temp_dir().join(format!("vektr-test-{}-trunc.vknn", std::process::id()));
+    std::fs::write(&path, &vektr::nnue::DEFAULT_NET[..1000]).unwrap();
+    let (out, _) = session(
+        &format!("setoption name EvalFile value {}\nposition startpos\ngo depth 2\n", path.display()),
+        500,
+    );
+    let _ = std::fs::remove_file(&path);
+    assert!(out.lines().any(|l| l.starts_with("info string error")));
+    assert!(out.lines().any(|l| l.starts_with("bestmove ") && !l.contains("0000")));
+}
+
+// Depth 2 rather than 1: the leaf after two plies has the root's side to move, so the raised
+// bias raises the root score; at depth 1 the leaf belongs to the opponent and it would lower it.
+#[test]
+fn a_loaded_evalfile_changes_the_score() {
+    let (base, _) = session("position startpos\ngo depth 2\n", 500);
+    let path = raised_net_file("score");
+    let (raised, _) = session(
+        &format!("setoption name EvalFile value {path}\nposition startpos\ngo depth 2\n"),
+        500,
+    );
+    let _ = std::fs::remove_file(&path);
+    let diff = last_cp(&raised) - last_cp(&base);
+    assert!((350..=450).contains(&diff), "score moved by {diff}");
+}
+
+#[test]
+fn the_loaded_network_survives_a_hash_change() {
+    let (base, _) = session("position startpos\ngo depth 2\n", 500);
+    let path = raised_net_file("hash");
+    let (raised, _) = session(
+        &format!(
+            "setoption name EvalFile value {path}\nsetoption name Hash value 8\nposition startpos\ngo depth 2\n"
+        ),
+        500,
+    );
+    let _ = std::fs::remove_file(&path);
+    let diff = last_cp(&raised) - last_cp(&base);
+    assert!((350..=450).contains(&diff), "score moved by {diff}");
+}

@@ -93,3 +93,48 @@ def test_failed_build_is_retried_after_the_wait(tmp_path, monkeypatch):
     with pytest.raises(builds.BuildFailed):
         ensure_build(tmp_path, "a" * 40)
     assert calls.count("cargo") == 2
+
+
+def script(tmp_path, body):
+    path = tmp_path / f"engine{len(list(tmp_path.iterdir()))}"
+    path.write_text(f"#!/bin/sh\n{body}\n")
+    path.chmod(0o755)
+    return path
+
+
+def test_netcheck_is_true_only_for_the_ok_line(tmp_path):
+    from vektr_ops.builds import netcheck
+
+    assert netcheck(script(tmp_path, 'echo "netcheck ok 256 positions"')) is True
+    assert netcheck(script(tmp_path, 'echo "mismatch x"; exit 1')) is False
+    assert netcheck(script(tmp_path, 'echo "netcheck ok 1 positions"; exit 1')) is False
+    assert netcheck(script(tmp_path, 'echo "netcheck ok 0 positions"')) is False
+    assert netcheck(script(tmp_path, "cat >/dev/null")) is False  # an engine without the command
+    assert netcheck(tmp_path / "missing") is False
+
+
+def test_net_hash_reads_the_file_at_that_commit(tmp_path):
+    import hashlib
+    import subprocess
+
+    from vektr_ops.builds import net_hash
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            cwd=tmp_path, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+    git("init", "-q")
+    (tmp_path / "a.txt").write_text("x")
+    git("add", ".")
+    git("commit", "-q", "-m", "one")
+    before = git("rev-parse", "HEAD")
+    net = tmp_path / "engine" / "nets" / "default.vknn"
+    net.parent.mkdir(parents=True)
+    net.write_bytes(b"network bytes")
+    git("add", ".")
+    git("commit", "-q", "-m", "two")
+    after = git("rev-parse", "HEAD")
+    assert net_hash(tmp_path, before) is None
+    assert net_hash(tmp_path, after) == hashlib.sha256(b"network bytes").hexdigest()[:16]
