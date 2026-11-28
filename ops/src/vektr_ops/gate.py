@@ -26,7 +26,7 @@ from vektr_ops.results import BatchResult
 from vektr_ops.stats import Penta, add, decide, elo_estimate, llr
 from vektr_ops.store import Store, StoreUnavailable, read_json, write_json
 
-GAME_CAP = 20_000
+GAME_CAP = 40_000
 ELO0 = 0.0
 ELO1 = 5.0
 ENGINE_OPTIONS = {"Hash": "16", "Threads": "1", "Move Overhead": "10"}
