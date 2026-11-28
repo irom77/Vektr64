@@ -16,7 +16,8 @@ fi
 export PIP_BREAK_SYSTEM_PACKAGES=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 command -v git >/dev/null || { apt-get update -qq && apt-get install -y -qq git; }
 
-git clone -q https://github.com/irom77/Vektr64.git /workspace/Vektr64
+# RunPod restarts a container whose command ended, so this may not be the first run here.
+[ -d /workspace/Vektr64/.git ] || git clone -q https://github.com/irom77/Vektr64.git /workspace/Vektr64
 cd /workspace/Vektr64
 git checkout -q "$VEKTR_COMMIT"
 
