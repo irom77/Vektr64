@@ -100,7 +100,9 @@ def run_training(
         paths = pull_shards(store, work / "shards", shards, selfplay)
         store.write_bytes("nets", prefix + "shards.json", json.dumps(paths).encode(), overwrite=True)
     else:  # a resumed run trains on the shards it started with, whatever the store holds now
-        paths = pull_shards(store, work / "shards", paths=json.loads(pinned))
+        pinned_paths = json.loads(pinned)
+        print(f"resuming with {len(pinned_paths)} pinned shards", file=sys.stderr)
+        paths = pull_shards(store, work / "shards", paths=pinned_paths)
 
     checkpoint = out / "checkpoint.pt"
     saved = store.read_bytes("nets", prefix + "checkpoint.pt")

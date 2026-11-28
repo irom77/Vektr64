@@ -83,14 +83,17 @@ configured store, with no RunPod call: use it to try the whole path on a small d
 The worker plays gate and anchor games first. Only when none is waiting does it generate self-play
 data: one shard (500,000 positions, about 34 MB before compression) at a time, with at most 2
 engine threads at the lowest priority. Shards go to the data repo under `selfplay/`. It stops at
-120 shards per champion network and starts a new count after a promotion. Lost rated games
-(standard, lost on the board, not on time) become starting positions for the self-play games
-during the ten-minute sync.
+120 shards per champion network and starts a new count after a promotion to a version with a
+different network. Every standard game the bot lost on the board (not on time), casual ones
+included, becomes a starting position for the self-play games during the ten-minute sync. While a
+shard is being generated, a newly opened gate test or anchor job on that machine waits until the
+shard is finished.
 
 - `vektr-ops status` shows `self-play: <n> of 120 shards for network <hash>, lost games: <m>`.
 - To turn self-play off, put `VEKTR_DATAGEN=0` in `.env` on the box and run
   `sudo systemctl restart vektr64-worker`.
-- `vektr-ops datagen --shards N` adds shards from the laptop.
+- `vektr-ops datagen --shards N` adds shards from the laptop. The 120 limit applies only to the
+  worker, so `status` can show more than 120.
 - One round by hand: `vektr-ops burst` (trains on the Lichess data and the newest 120 self-play
   shards), `vektr-ops install-net`, then branch, commit and push, then `vektr-ops gate`, exactly as
   in "Training a network".

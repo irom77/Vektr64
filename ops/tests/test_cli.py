@@ -354,3 +354,20 @@ def test_datagen_refuses_when_this_machine_must_not_play(monkeypatch, tmp_path):
     monkeypatch.setattr("vektr_ops.cli.gate_mod.machine", lambda: (2, 4000))
     r = CliRunner().invoke(app, ["datagen"])
     assert r.exit_code == 1 and "must not play" in r.output
+
+
+def test_a_broken_experience_import_does_not_fail_the_sync(monkeypatch, tmp_path):
+    import sys
+
+    from vektr_ops import sync as sync_mod
+
+    offline(monkeypatch)
+    monkeypatch.setenv("VEKTR_STORE", str(tmp_path / "store"))
+    monkeypatch.setattr("vektr_ops.cli.repo_root", lambda: tmp_path)
+    monkeypatch.setattr(sync_mod, "sync", lambda *a, **k: "unchanged")
+    import vektr_ops
+
+    monkeypatch.delattr(vektr_ops, "experience", raising=False)
+    monkeypatch.setitem(sys.modules, "vektr_ops.experience", None)
+    r = CliRunner().invoke(app, ["sync"])
+    assert r.exit_code == 0 and "lost games not added:" in r.output

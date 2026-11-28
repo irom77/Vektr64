@@ -60,7 +60,7 @@ def test_generate_uploads_one_gzipped_shard(tmp_path):
     path = go(store, tmp_path, fake_run())
     assert path.startswith("selfplay/") and f"-{NET}-" in path
     assert len(gzip.decompress(store.read_bytes("data", path))) == 10 * RECORD_BYTES
-    assert list((tmp_path / "state" / "datagen").iterdir()) == []
+    assert [p.name for p in (tmp_path / "state" / "datagen").iterdir()] == [".lock"]
     assert selfplay.shards_for(store, NET) == [path]
     assert selfplay.shards_for(store, "other") == []
 
@@ -143,7 +143,7 @@ def test_a_stale_part_file_is_cleared_and_never_uploaded(tmp_path):
     (folder / "shard.vkd.part").write_bytes(b"half")
     (folder / "shard.vkd").write_bytes(b"old")
     go(store, tmp_path, fake_run())
-    assert list(folder.iterdir()) == []
+    assert [p.name for p in folder.iterdir()] == [".lock"]
     assert len(store.list("data", selfplay.PREFIX)) == 1
     assert selfplay.flush(store, tmp_path) == 0
 
@@ -165,7 +165,7 @@ def test_an_upload_failure_keeps_the_shard_for_flush(tmp_path):
     assert len(kept) == 1
     assert selfplay.flush(good, tmp_path) == 1
     assert len(good.list("data", selfplay.PREFIX)) == 1
-    assert list(folder.iterdir()) == []
+    assert [p.name for p in folder.iterdir()] == [".lock"]
 
 
 def fill(store, net, n):
@@ -227,3 +227,23 @@ def test_a_stray_file_in_the_store_is_skipped(tmp_path):
     store.write_bytes("data", "selfplay/stray.vkd.gz", b"x")
     store.write_bytes("data", "selfplay/README.md", b"x")
     assert len(selfplay.shards_for(store, NET)) == 1
+
+
+def test_a_held_lock_refuses_and_touches_nothing(tmp_path):
+    import fcntl
+
+    store = champion_store(tmp_path)
+    folder = tmp_path / "state" / "datagen"
+    folder.mkdir(parents=True)
+    (folder / "shard.vkd.part").write_bytes(b"theirs")
+    commands = []
+    with open(folder / ".lock", "w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(DatagenFailed, match="another datagen is running here"):
+            go(store, tmp_path, fake_run(commands))
+        assert selfplay.flush(store, tmp_path) == 0
+    assert commands == []
+    assert (folder / "shard.vkd.part").read_bytes() == b"theirs"
+    assert len(go(store, tmp_path, fake_run(commands)).split("-")) >= 4
+    assert len(commands) == 1
+    assert selfplay.flush(store, tmp_path) == 0

@@ -369,6 +369,14 @@ def test_the_run_record_lists_selfplay_shards(tmp_path):
     assert len(record["shards"]) == 4
 
 
+def test_a_resumed_run_says_it_uses_the_pinned_shards(tmp_path, capsys):
+    store = selfplay_store(tmp_path)
+    train(tmp_path, store, starter([], on_exit=finish), selfplay=2)
+    assert "resuming" not in capsys.readouterr().err
+    train(tmp_path, store, starter([], on_exit=finish), selfplay=0)
+    assert "resuming with 4 pinned shards" in capsys.readouterr().err
+
+
 def test_a_resumed_run_keeps_its_shard_selection(tmp_path):
     store = selfplay_store(tmp_path)
     first = train(tmp_path, store, starter([], on_exit=finish), selfplay=2)

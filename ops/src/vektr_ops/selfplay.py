@@ -1,10 +1,12 @@
 """Self-play data: run the engine's `datagen` with the champion's network and upload one shard."""
 
+import fcntl
 import gzip
 import secrets
 import shutil
 import socket
 import subprocess
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -47,9 +49,30 @@ def _local_name(path: str) -> str:
     return path.replace("/", "__")
 
 
+@contextmanager
+def _exclusive(folder: Path):
+    """Hold `state/datagen/.lock` without waiting; yields False when another process holds it."""
+    folder.mkdir(parents=True, exist_ok=True)
+    with open(folder / ".lock", "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        yield True
+
+
 def flush(store: Store, root: Path) -> int:
-    """Upload the finished shards an earlier failure left in `state/datagen/`; returns how many."""
+    """Upload the finished shards an earlier failure left in `state/datagen/`; returns how many.
+
+    Returns 0 without touching anything while another datagen holds the folder.
+    """
     folder = Path(root) / "state" / "datagen"
+    with _exclusive(folder) as free:
+        return _flush(store, folder) if free else 0
+
+
+def _flush(store: Store, folder: Path) -> int:
     uploaded = 0
     for shard in sorted(folder.glob(f"*{SUFFIX}")):
         store.write_bytes("data", shard.name.replace("__", "/"), shard.read_bytes(), overwrite=True)
@@ -113,9 +136,15 @@ def generate(
 ) -> str:
     """Play self-play games with the champion's network and upload one shard; returns its store path."""
     root = Path(root)
-    flush(store, root)
     folder = root / "state" / "datagen"
-    folder.mkdir(parents=True, exist_ok=True)
+    with _exclusive(folder) as free:
+        if not free:
+            raise DatagenFailed("another datagen is running here")
+        return _generate(store, root, folder, commit, threads, positions, build, run)
+
+
+def _generate(store, root, folder, commit, threads, positions, build, run) -> str:
+    _flush(store, folder)
     for stale in [*folder.glob("*.part"), *folder.glob("*.vkd")]:  # left by a killed engine
         stale.unlink()
     net, net_file = _champion_net(store, root)
