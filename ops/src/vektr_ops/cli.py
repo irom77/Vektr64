@@ -479,13 +479,14 @@ def sync() -> None:
         refresh_page(root)
         raise typer.Exit(1)
     try:
-        typer.echo(f"game records uploaded: {sync_mod.upload_games(store, root)}")
-    except StoreUnavailable as error:
-        typer.echo(f"game records not uploaded: {error}")
-    try:
-        typer.echo(f"lost games added: {experience.upload_experience(store, root)}")
-    except StoreUnavailable as error:
-        typer.echo(f"lost games not added: {error}")
+        try:
+            typer.echo(f"game records uploaded: {sync_mod.upload_games(store, root)}")
+        except StoreUnavailable as error:
+            typer.echo(f"game records not uploaded: {error}")
+        try:
+            typer.echo(f"lost games added: {experience.upload_experience(store, root)}")
+        except Exception as error:  # a fault in this extra step never fails the sync
+            typer.echo(f"lost games not added: {type(error).__name__}: {error}")
     finally:
         refresh_page(root)
 

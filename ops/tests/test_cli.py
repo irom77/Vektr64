@@ -281,4 +281,36 @@ def test_an_unavailable_store_for_lost_games_does_not_fail_the_sync(monkeypatch,
     monkeypatch.setattr(sync_mod, "sync", lambda *a, **k: "unchanged")
     monkeypatch.setattr(experience, "upload_experience", down)
     r = CliRunner().invoke(app, ["sync"])
-    assert r.exit_code == 0 and "lost games not added: hub down" in r.output
+    assert r.exit_code == 0 and "lost games not added: StoreUnavailable: hub down" in r.output
+
+
+def test_a_vanishing_record_does_not_fail_the_sync(monkeypatch, tmp_path):
+    from vektr_ops import experience, sync as sync_mod
+
+    def gone(*a, **k):
+        raise OSError("record vanished")
+
+    offline(monkeypatch)
+    monkeypatch.setenv("VEKTR_STORE", str(tmp_path / "store"))
+    monkeypatch.setattr("vektr_ops.cli.repo_root", lambda: tmp_path)
+    monkeypatch.setattr(sync_mod, "sync", lambda *a, **k: "unchanged")
+    monkeypatch.setattr(experience, "upload_experience", gone)
+    r = CliRunner().invoke(app, ["sync"])
+    assert r.exit_code == 0 and "lost games not added: OSError: record vanished" in r.output
+
+
+def test_the_page_is_refreshed_even_when_the_game_upload_fails_badly(monkeypatch, tmp_path):
+    from vektr_ops import sync as sync_mod
+
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+
+    refreshed = []
+    offline(monkeypatch)
+    monkeypatch.setenv("VEKTR_STORE", str(tmp_path / "store"))
+    monkeypatch.setattr("vektr_ops.cli.repo_root", lambda: tmp_path)
+    monkeypatch.setattr("vektr_ops.cli.refresh_page", lambda root: refreshed.append(root))
+    monkeypatch.setattr(sync_mod, "sync", lambda *a, **k: "unchanged")
+    monkeypatch.setattr(sync_mod, "upload_games", boom)
+    r = CliRunner().invoke(app, ["sync"])
+    assert r.exit_code != 0 and refreshed == [tmp_path]
