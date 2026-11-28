@@ -182,3 +182,11 @@ fn bad_network_bytes_are_errors_not_panics() {
 fn netcheck_reports_a_disagreement() {
     assert!(netcheck(&Network::embedded(), "8/8/8/4k3/8/8/8/4K3 w - -;12345").is_err());
 }
+
+#[test]
+fn the_embedded_network_knows_material() {
+    let net = Network::embedded();
+    let no_queen = parse_fen("rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap();
+    assert!(net.evaluate_board(&no_queen) > 300);
+    assert!(net.evaluate_board(&Board::default()).abs() < 150);
+}

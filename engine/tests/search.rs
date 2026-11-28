@@ -116,7 +116,8 @@ fn finds_the_fine_70_key_move() {
     let r = Searcher::new(64).search(&mut p, &Limits::depth(30), &mut |_, _| {});
     assert_eq!(p.move_to_uci(r.best_move.unwrap()), "a1b1");
     assert!(r.score > 250, "score = {}", r.score);
-    assert!(r.nodes < 20_000_000, "nodes = {}", r.nodes);
+    // 20M with the hand-written evaluation; 98.2M measured with the bootstrap network.
+    assert!(r.nodes < 150_000_000, "nodes = {}", r.nodes);
 }
 
 #[test]
@@ -187,4 +188,17 @@ fn warm_table_does_not_walk_into_threefold_when_winning() {
     for seed in 1..=4 {
         assert_eq!(first_threefold(fen, 60, 300_000, seed), None, "seed {seed}");
     }
+}
+
+#[test]
+fn a_position_scores_the_same_however_it_was_reached() {
+    let mut played = Position::startpos();
+    for m in ["e2e4", "e7e5", "g1f3", "b8c6"] {
+        played.play_uci(m).unwrap();
+    }
+    let mut parsed =
+        Position::from_fen("r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3").unwrap();
+    let a = Searcher::new(16).search(&mut played, &Limits::depth(5), &mut |_, _| {});
+    let b = Searcher::new(16).search(&mut parsed, &Limits::depth(5), &mut |_, _| {});
+    assert_eq!((a.score, a.nodes), (b.score, b.nodes));
 }

@@ -8,6 +8,8 @@ use std::sync::{Arc, Mutex};
 
 use cozy_chess::Color;
 
+use crate::nnue::Network;
+
 use crate::position::Position;
 use crate::search::{Limits, SearchResult, Searcher};
 use crate::time::{self, Clock};
@@ -74,6 +76,7 @@ struct Engine {
     searcher: Option<Box<Searcher>>,
     stop: Arc<AtomicBool>,
     overhead_ms: i64,
+    net: Arc<Network>,
     input_closed: bool,
 }
 
@@ -118,11 +121,22 @@ impl Engine {
         match name.as_str() {
             "hash" => {
                 if let Ok(mb) = value.parse::<usize>() {
-                    let searcher = Searcher::new(mb.clamp(1, 4096));
+                    let mut searcher = Searcher::new(mb.clamp(1, 4096));
+                    searcher.set_network(self.net.clone());
                     self.stop = searcher.stop_flag();
                     self.searcher = Some(Box::new(searcher));
                 }
             }
+            "evalfile" => match Network::load(&value) {
+                Ok(net) => {
+                    let net = Arc::new(net);
+                    if let Some(s) = self.searcher.as_mut() {
+                        s.set_network(net.clone());
+                    }
+                    self.net = net;
+                }
+                Err(e) => say(&self.out, &format!("info string error: {e}")),
+            },
             "move overhead" => {
                 if let Ok(ms) = value.parse::<i64>() {
                     self.overhead_ms = ms.clamp(0, 5000);
@@ -207,6 +221,7 @@ impl Engine {
                         "option name Move Overhead type spin default {DEFAULT_OVERHEAD_MS} min 0 max 5000"
                     ),
                 );
+                say(&self.out, "option name EvalFile type string default <embedded>");
                 say(&self.out, "option name Threads type spin default 1 min 1 max 1");
                 say(&self.out, "uciok");
             }
@@ -266,6 +281,7 @@ pub fn run(input: impl BufRead + Send + 'static, output: impl Write + Send + 'st
         stop: searcher.stop_flag(),
         searcher: Some(Box::new(searcher)),
         overhead_ms: DEFAULT_OVERHEAD_MS,
+        net: Network::embedded(),
         input_closed: false,
     };
 
