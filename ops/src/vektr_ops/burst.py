@@ -16,7 +16,20 @@ MAX_RATE = 0.60  # USD per hour
 SETUP_S = 1200  # allowance for the image pull, clone and dependency install
 NAME_PREFIX = "vektr64-"
 REPO_RAW = "https://raw.githubusercontent.com/irom77/Vektr64"
-DELETE = 'runpodctl pod delete "$RUNPOD_POD_ID"'
+DELETE = "bye"
+# The pod removes itself. The image's runpodctl may be an older one that only knows `remove pod`,
+# so each try goes through both spellings and then the REST API, and whatever they print lands in
+# the log. A pod whose command ends without removing itself is restarted by RunPod and bills on.
+BYE = (
+    "bye() { n=0; while [ $n -lt 3 ]; do n=$((n+1)); "
+    '{ runpodctl pod delete "$RUNPOD_POD_ID" && return 0; '
+    'runpodctl remove pod "$RUNPOD_POD_ID" && return 0; '
+    '[ -n "${RUNPOD_API_KEY:-}" ] && curl -fsS -m 30 -X DELETE '
+    '-H "Authorization: Bearer $RUNPOD_API_KEY" '
+    f'"{runpod.API}/pods/$RUNPOD_POD_ID" && return 0; '
+    "} >> /tmp/burst.log 2>&1; "
+    'sleep "${VEKTR_RETRY_S:-10}"; done; return 1; }'
+)
 
 
 class BurstFailed(Exception):
@@ -53,6 +66,7 @@ def start_cmd(commit: str, hard_s: int) -> list[str]:
     url = f"{REPO_RAW}/{commit}/deploy/burst.sh"
     script = "\n".join(
         [
+            BYE,
             f"({'sleep ' + str(hard_s)}; {DELETE}) &",
             f"trap '{_UPLOAD}; {DELETE}' EXIT",
             "set -eu -o pipefail",
@@ -150,8 +164,13 @@ def watch(
     sleep=None,
     clock=time.monotonic,
     poll_s: int = 30,
+    finished=None,
 ) -> str:
     """Wait until the pod is gone; delete it if it stops or overstays. Returns what happened.
+
+    `finished()` says why the pod has nothing left to do (its result or its failure log is in the
+    store), or None. When it says so on two polls in a row the pod is deleted here, without relying
+    on the pod to remove itself; the second poll gives its last uploads time to end.
 
     A poll that fails or answers nonsense says nothing (status UNKNOWN); the deadline still applies.
     "Gone" (a 404) counts only once a poll has seen the pod, since a new pod may not be listed yet.
@@ -159,7 +178,16 @@ def watch(
     sleep = sleep or time.sleep
     limit = clock() + hard_s + 300
     seen = False
+    over = 0
     while True:
+        try:
+            reason = finished() if finished else None
+        except Exception:
+            reason = None  # a store that cannot be read says nothing
+        over = over + 1 if reason else 0
+        if over >= 2:
+            api.delete_pod(key, pod_id)
+            return f"deleted: {reason}"
         try:
             pod = api.get_pod(key, pod_id)
         except Exception:

@@ -359,7 +359,7 @@ def burst(
         if not yes and not typer.confirm("continue?", default=False):
             typer.echo("cancelled; deleting the pod")
             raise typer.Exit(1)
-        outcome = burst_mod.watch(key, pod_id, hard_s, api=api)
+        outcome = burst_mod.watch(key, pod_id, hard_s, api=api, finished=_run_state(root, run))
         gone = outcome == "gone" or outcome.startswith("deleted")
         typer.echo(f"pod {outcome}")
     finally:
@@ -377,6 +377,25 @@ def burst(
         typer.echo(f"error: the pod is gone but run {run} has no network in the store; start again with --run {run}")
         raise typer.Exit(1)
     typer.echo(f"network ready: vektr-ops install-net {run}")
+
+
+def _run_state(root: Path, run: str):
+    """A check for `watch`: has the run's record or its failure log changed in the store since now?"""
+    paths = {f"runs/{run}/run.json": "the network is in the store", f"runs/{run}/burst.log": "the pod's script failed"}
+    try:
+        store = the_store(root)
+        before = {path: store.read_bytes("nets", path) for path in paths}
+    except (typer.Exit, StoreUnavailable):
+        return None
+
+    def finished() -> str | None:
+        for path, reason in paths.items():
+            now = store.read_bytes("nets", path)
+            if now is not None and now != before[path]:
+                return reason
+        return None
+
+    return finished
 
 
 def _show_burst_log(root: Path, run: str) -> None:

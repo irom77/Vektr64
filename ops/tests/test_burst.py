@@ -61,30 +61,37 @@ def bodies(n=2):
 
 def test_the_watchdog_and_trap_come_before_anything_else():
     script = start_cmd("abc123", 3900)[2]
-    assert script.index("sleep 3900") < script.index("trap") < script.index("curl")
-    assert script.startswith("(sleep 3900; runpodctl pod delete") and "raw.githubusercontent.com/irom77/Vektr64/abc123/deploy/burst.sh" in script
+    assert script.index("bye() {") < script.index("sleep 3900") < script.index("trap") < script.index("curl -fsSL")
+    assert "(sleep 3900; bye) &" in script and "raw.githubusercontent.com/irom77/Vektr64/abc123/deploy/burst.sh" in script
 
 
 def test_the_hard_limit_is_setup_plus_training():
     assert hard_limit(45) == 3900
 
 
-def run_pod_script(tmp_path, uploader=None, timeout_s=1):
+def run_pod_script(tmp_path, uploader=None, timeout_s=1, runpodctl=None, extra_env=None):
     """Execute the generated pod script with stub runpodctl and curl (and optionally vektr-ops)."""
     import signal
 
     stubs = tmp_path / "bin"
     stubs.mkdir()
     record = tmp_path / "record"
-    (stubs / "runpodctl").write_text(f'#!/bin/sh\necho "$@" >> {record}\n')
-    (stubs / "curl").write_text("#!/bin/sh\necho 'curl: the download broke' >&2\nexit 22\n")
+    (stubs / "runpodctl").write_text(
+        (runpodctl or '#!/bin/sh\necho "$@" >> RECORD\n').replace("RECORD", str(record))
+    )
+    # curl: the script download breaks; a DELETE call is recorded (without its headers) and works
+    (stubs / "curl").write_text(
+        '#!/bin/sh\ncase "$*" in *DELETE*) for a in "$@"; do last=$a; done; '
+        f'echo "curl DELETE $last" >> {record}; exit 0;; esac\n'
+        "echo 'curl: the download broke' >&2\nexit 22\n"
+    )
     if uploader is not None:
         (stubs / "vektr-ops").write_text(uploader.replace("RECORD", str(record)))
     for f in stubs.iterdir():
         f.chmod(0o755)
     env = {
         "PATH": f"{stubs}:/usr/bin:/bin", "RUNPOD_POD_ID": "pod42", "VEKTR_RUN": "r1",
-        "VEKTR_UPLOAD_TIMEOUT": str(timeout_s),
+        "VEKTR_UPLOAD_TIMEOUT": str(timeout_s), "VEKTR_RETRY_S": "0", **(extra_env or {}),
     }
     with open(tmp_path / "out", "wb") as out:
         proc = subprocess.Popen(start_cmd("abc", 30), env=env, stdout=out, stderr=out, start_new_session=True)
@@ -99,6 +106,28 @@ def test_a_failing_start_deletes_the_pod(tmp_path):
     code, record = run_pod_script(tmp_path)
     assert code != 0
     assert record == ["pod delete pod42"]
+
+
+OLD_RUNPODCTL = '#!/bin/sh\necho "$@" >> RECORD\n[ "$1" = remove ]\n'  # knows only `remove pod`
+NO_RUNPODCTL = '#!/bin/sh\necho "$@" >> RECORD\nexit 1\n'
+
+
+def test_an_older_runpodctl_still_deletes_the_pod(tmp_path):
+    code, record = run_pod_script(tmp_path, runpodctl=OLD_RUNPODCTL)
+    assert code != 0
+    assert record == ["pod delete pod42", "remove pod pod42"]
+
+
+def test_the_rest_api_deletes_the_pod_when_runpodctl_cannot(tmp_path):
+    code, record = run_pod_script(tmp_path, runpodctl=NO_RUNPODCTL, extra_env={"RUNPOD_API_KEY": "rpa_INPOD"})
+    assert record == ["pod delete pod42", "remove pod pod42", "curl DELETE https://api.runpod.io/v2/pods/pod42"]
+    assert "rpa_INPOD" not in (tmp_path / "out").read_text()
+
+
+def test_a_delete_that_keeps_failing_is_tried_three_times_and_ends(tmp_path):
+    code, record = run_pod_script(tmp_path, runpodctl=NO_RUNPODCTL)
+    assert code != 0
+    assert record == ["pod delete pod42", "remove pod pod42"] * 3
 
 
 UPLOADERS = {
@@ -283,6 +312,23 @@ def test_watch_deletes_a_pod_that_outlives_the_hard_limit():
 
     result = watch("k", "p1", 100, api=api, sleep=sleep, clock=lambda: now[0], poll_s=30)
     assert result.startswith("deleted") and api.deleted() == ["p1"] and now[0] >= 400
+
+
+def test_watch_deletes_the_pod_once_the_run_is_in_the_store_on_two_polls():
+    api = FakeApi(states=[{"status": "RUNNING"}])
+    answers = iter([None, "the network is in the store", None, "the network is in the store", "the network is in the store"])
+    result = watch("k", "p1", 100, api=api, sleep=lambda s: None, finished=lambda: next(answers))
+    assert result == "deleted: the network is in the store"
+    assert api.deleted() == ["p1"] and api.calls.count(("get", "p1")) == 4
+
+
+def test_watch_ignores_a_store_that_cannot_be_read():
+    api = FakeApi(states=[{"status": "RUNNING"}, None])
+
+    def broken():
+        raise RuntimeError("store down")
+
+    assert watch("k", "p1", 100, api=api, sleep=lambda s: None, finished=broken) == "gone"
 
 
 def test_watch_survives_a_failed_poll():
@@ -529,3 +575,26 @@ def test_local_dry_run_trains_and_uploads(tmp_path):
         assert (store / "nets" / "runs" / "dry" / "run.json").is_file()
     finally:
         shutil.rmtree(root / "state" / "train" / "dry", ignore_errors=True)
+
+
+def test_the_launcher_deletes_the_pod_when_the_run_record_appears(isolated, monkeypatch):
+    from vektr_ops.store import LocalStore
+
+    api = FakeApi(creates=[GOOD], states=[{"status": "RUNNING"}])  # the pod never leaves by itself
+    configured(monkeypatch, isolated, api)
+    store = LocalStore(isolated / "store")
+    store.write_bytes("nets", "runs/r1/run.json", b"an older run")
+    polls = []
+
+    def get_pod(key, id):
+        polls.append(id)
+        if len(polls) == 2:  # the pod finishes: the new record and the network land in the store
+            store.write_bytes("nets", "runs/r1/run.json", b"the new run", overwrite=True)
+            store.write_bytes("nets", "runs/r1/net.vknn", b"net", overwrite=True)
+        assert len(polls) < 50, "the launcher never deleted the pod"
+        return {"status": "RUNNING"}
+
+    monkeypatch.setattr(api, "get_pod", get_pod)
+    r = CliRunner().invoke(app, ["burst", "--minutes", "45", "--run", "r1", "--yes"])
+    assert api.deleted() == ["p1"] and len(polls) == 3
+    assert "pod deleted: the network is in the store" in r.output and "network ready" in r.output

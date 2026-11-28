@@ -38,6 +38,10 @@ laptop, and some credit in the RunPod account.
 3. **Smoke burst first.** Before the first real run, spend a minute to prove the whole path:
    `vektr-ops burst --minutes 1 --run smoke-<date>`. Check afterwards that `vektr-ops burst --list`
    shows no pods and the run has a network in the store. Only then start the real one.
+   The launcher deletes the pod itself as soon as the run's record (or its failure log) appears in
+   the store, so `pod deleted: the network is in the store` is the normal ending. The pod's own
+   delete is a backup; the first smoke burst (2026-11-28) showed the image's `runpodctl` did not
+   accept `pod delete`, and RunPod restarted the finished container until the launcher's deadline.
    **Start a burst:** `vektr-ops burst --minutes 45 --run first-<date>`. It uses RunPod's secure
    cloud; `--cloud community` is cheaper but runs on third-party hosts. It tries four GPU types
    in turn, rejects any pod quoted above `--max-rate` (default $0.60 an hour), then prints the GPU,
