@@ -216,6 +216,21 @@ def test_train_reports_a_failed_run_and_exits_1(monkeypatch, tmp_path):
     assert r.exit_code == 1 and "trainer exited with status 1" in r.output
 
 
+def test_train_passes_selfplay(monkeypatch, tmp_path):
+    cli_setup(monkeypatch, tmp_path)
+    seen = {}
+
+    def fake(*a, **k):
+        seen.update(k)
+        return {"net": "n", "val_loss": 1.0}
+
+    monkeypatch.setattr("vektr_ops.training.run_training", fake)
+    r = CliRunner().invoke(app, ["train", "--run", "r1", "--minutes", "1", "--selfplay", "7"])
+    assert r.exit_code == 0 and seen["selfplay"] == 7
+    CliRunner().invoke(app, ["train", "--run", "r1", "--minutes", "1"])
+    assert seen["selfplay"] == 120
+
+
 def gate_setup(monkeypatch, tmp_path, net, passes):
     from helpers import store_with_champion_only
 

@@ -275,6 +275,7 @@ def train(
     run: str = typer.Option(..., "--run", help="Run id; an existing run resumes from its checkpoint."),
     minutes: float = typer.Option(..., "--minutes", help="Training time budget in minutes."),
     shards: int = typer.Option(None, "--shards", help="Use only the first N shards."),
+    selfplay: int = typer.Option(120, "--selfplay", help="Also train on the newest N self-play shards (0 = none)."),
 ) -> None:
     """Train a network on the prepared shards; checkpoints and results go to the store."""
     from vektr_ops import training
@@ -282,7 +283,7 @@ def train(
     root = repo_root()
     store = the_store(root)
     try:
-        record = training.run_training(store, root, run, minutes=minutes, shards=shards, env=load_env(root))
+        record = training.run_training(store, root, run, minutes=minutes, shards=shards, selfplay=selfplay, env=load_env(root))
     except (RuntimeError, ValueError, OSError, StoreUnavailable) as error:
         typer.echo(f"error: {error}")
         raise typer.Exit(1)

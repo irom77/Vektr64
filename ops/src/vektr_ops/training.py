@@ -7,6 +7,7 @@ import sys
 import time
 from pathlib import Path
 
+from vektr_ops.selfplay import PER_NET, PREFIX, SUFFIX
 from vektr_ops.store import Store, StoreUnavailable
 
 
@@ -18,14 +19,20 @@ def trainer_cmd(env: dict, module: str, *args: str) -> list[str]:
     return ["uv", "run", "--project", "trainer", "python", "-m", module, *args]
 
 
-def pull_shards(store: Store, dest: Path, limit: int | None = None) -> list[str]:
-    """Fetch training shards (the first `limit`, by path) into `dest`; returns their store paths.
+def pull_shards(store: Store, dest: Path, limit: int | None = None, selfplay: int = PER_NET) -> list[str]:
+    """Fetch training shards into `dest`; returns their store paths.
+
+    These are the first `limit` bootstrap shards by path, then the newest `selfplay` self-play shards
+    (0 = none). Self-play names begin with a UTC time, so the last paths are the newest, whatever network
+    played them.
 
     Local names are the store path with `/` as `__`, so they sort like the paths and never collide;
     files in `dest` that are not selected are removed, because the trainer reads every shard there.
     """
     names = sorted(n for n in store.list("data", "bootstrap/") if n.endswith(".npz"))
     names = names[:limit]
+    if selfplay > 0:
+        names += sorted(n for n in store.list("data", PREFIX) if n.endswith(SUFFIX))[-selfplay:]
     dest.mkdir(parents=True, exist_ok=True)
     wanted = {n.replace("/", "__") for n in names}
     for old in dest.iterdir():
@@ -70,6 +77,7 @@ def run_training(
     *,
     minutes: float,
     shards: int | None = None,
+    selfplay: int = PER_NET,
     env: dict,
     start=subprocess.Popen,
     poll_s: float = 15,
@@ -80,7 +88,7 @@ def run_training(
     out = work / "out"
     out.mkdir(parents=True, exist_ok=True)
     prefix = f"runs/{run}/"
-    paths = pull_shards(store, work / "shards", shards)
+    paths = pull_shards(store, work / "shards", shards, selfplay)
 
     checkpoint = out / "checkpoint.pt"
     saved = store.read_bytes("nets", prefix + "checkpoint.pt")
