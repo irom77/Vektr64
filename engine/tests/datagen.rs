@@ -129,3 +129,114 @@ fn unplayable_starts_give_no_game() {
     let mut searcher = Searcher::new(1);
     assert!(play_game(&mut searcher, &mut Rng::new(1), &s).is_none());
 }
+
+mod command {
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    use vektr::datagen::{run, Settings, RECORD_BYTES};
+    use vektr::nnue::Network;
+
+    fn settings() -> Settings {
+        Settings { nodes: 200, starts: vec![], start_share: 0 }
+    }
+
+    fn bytes(positions: u64, threads: usize, seed: u64) -> (Vec<u8>, vektr::datagen::Summary) {
+        let mut out: Vec<u8> = Vec::new();
+        let summary = run(&settings(), Network::embedded(), positions, threads, seed, &mut out).unwrap();
+        (out, summary)
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("vektr-datagen-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn run_writes_exactly_the_requested_positions() {
+        let (out, s) = bytes(200, 1, 1);
+        assert_eq!(out.len(), 200 * RECORD_BYTES);
+        assert_eq!(s.positions, 200);
+        assert_eq!(s.white_wins + s.draws + s.black_wins, s.games);
+    }
+
+    #[test]
+    fn single_thread_runs_repeat() {
+        let (a, _) = bytes(100, 1, 5);
+        let (b, _) = bytes(100, 1, 5);
+        let (c, _) = bytes(100, 1, 6);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn threads_share_one_target() {
+        let (out, _) = bytes(300, 3, 1);
+        assert_eq!(out.len(), 300 * RECORD_BYTES);
+        for rec in out.chunks(RECORD_BYTES) {
+            let idx: Vec<u16> = (0..32).map(|i| u16::from_le_bytes([rec[2 * i], rec[2 * i + 1]])).collect();
+            let pads = idx.iter().position(|&v| v == 768).unwrap_or(32);
+            assert!(idx[..pads].windows(2).all(|w| w[0] < w[1]));
+            assert!(idx[pads..].iter().all(|&v| v == 768));
+            assert!(rec[66] <= 1);
+            assert!(rec[67] <= 2);
+        }
+    }
+
+    fn vektr() -> Command {
+        Command::new(env!("CARGO_BIN_EXE_vektr"))
+    }
+
+    #[test]
+    fn the_command_writes_the_file_and_leaves_no_part() {
+        let dir = scratch("ok");
+        let file = dir.join("a.vkd");
+        let o = vektr()
+            .args(["datagen", "--out", file.to_str().unwrap(), "--positions", "100", "--nodes", "200", "--seed", "7"])
+            .output()
+            .unwrap();
+        assert_eq!(o.status.code(), Some(0));
+        assert_eq!(std::fs::metadata(&file).unwrap().len(), 6800);
+        assert!(!dir.join("a.vkd.part").exists());
+        let stdout = String::from_utf8(o.stdout).unwrap();
+        assert!(stdout.lines().last().unwrap().starts_with("datagen: "));
+    }
+
+    #[test]
+    fn the_command_skips_bad_start_lines() {
+        let dir = scratch("starts");
+        let file = dir.join("a.vkd");
+        let starts = dir.join("starts.txt");
+        std::fs::write(&starts, "garbage\n4k3/8/8/8/8/8/8/QQQQK3 w - - 0 1\n").unwrap();
+        let o = vektr()
+            .args(["datagen", "--out", file.to_str().unwrap(), "--positions", "100", "--nodes", "200"])
+            .args(["--starts", starts.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert_eq!(o.status.code(), Some(0));
+        assert_eq!(std::fs::metadata(&file).unwrap().len(), 6800);
+    }
+
+    #[test]
+    fn a_missing_network_fails_without_an_output_file() {
+        let dir = scratch("nonet");
+        let file = dir.join("a.vkd");
+        let none = dir.join("none.vknn");
+        let o = vektr()
+            .args(["datagen", "--out", file.to_str().unwrap(), "--positions", "100", "--net", none.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert_eq!(o.status.code(), Some(1));
+        assert!(!file.exists());
+        assert!(!dir.join("a.vkd.part").exists());
+    }
+
+    #[test]
+    fn missing_arguments_print_usage() {
+        let o = vektr().arg("datagen").output().unwrap();
+        assert_eq!(o.status.code(), Some(2));
+        assert!(!o.stderr.is_empty());
+    }
+}

@@ -5,9 +5,12 @@
 //! +-3000), a u8 side to move (0 white, 1 black) and a u8 result for the side to
 //! move (0 loss, 1 draw, 2 win).
 
+use std::io::Write;
+use std::sync::{Arc, Mutex};
+
 use cozy_chess::{Board, Color, Piece};
 
-use crate::nnue::features;
+use crate::nnue::{features, Network};
 use crate::position::Position;
 use crate::search::{Limits, Searcher};
 use crate::{MATE, MAX_PLY};
@@ -202,4 +205,108 @@ pub fn play_game(searcher: &mut Searcher, rng: &mut Rng, settings: &Settings) ->
         1
     };
     Some(Game { samples, result: white_result })
+}
+
+/// What `run` produced.
+pub struct Summary {
+    pub games: u64,
+    pub positions: u64,
+    pub white_wins: u64,
+    pub draws: u64,
+    pub black_wins: u64,
+}
+
+/// Dropped games in a row, over all threads, after which `run` gives up.
+const MAX_DROPPED_IN_A_ROW: u64 = 100_000;
+
+struct Shared<'a> {
+    out: &'a mut (dyn Write + Send),
+    summary: Summary,
+    target: u64,
+    dropped_in_a_row: u64,
+    error: Option<std::io::Error>,
+}
+
+impl Shared<'_> {
+    fn done(&self) -> bool {
+        self.error.is_some() || self.summary.positions >= self.target
+    }
+
+    /// Writes the game, cut so that the total never exceeds the target.
+    fn accept(&mut self, game: Game) {
+        let room = (self.target - self.summary.positions) as usize;
+        let mut bytes = Vec::with_capacity(room.min(game.samples.len()) * RECORD_BYTES);
+        for sample in game.samples.iter().take(room) {
+            bytes.extend_from_slice(&encode(&sample.board, sample.score, game.result));
+        }
+        if let Err(e) = self.out.write_all(&bytes) {
+            self.error = Some(e);
+            return;
+        }
+        self.summary.positions += (bytes.len() / RECORD_BYTES) as u64;
+        self.summary.games += 1;
+        match game.result {
+            2 => self.summary.white_wins += 1,
+            1 => self.summary.draws += 1,
+            _ => self.summary.black_wins += 1,
+        }
+    }
+}
+
+/// Plays self-play games on `threads` threads and writes exactly `positions`
+/// records to `out`. Thread `i` is seeded with `seed + i`.
+pub fn run(
+    settings: &Settings,
+    net: Arc<Network>,
+    positions: u64,
+    threads: usize,
+    seed: u64,
+    out: &mut (dyn Write + Send),
+) -> std::io::Result<Summary> {
+    let shared = Mutex::new(Shared {
+        out,
+        summary: Summary { games: 0, positions: 0, white_wins: 0, draws: 0, black_wins: 0 },
+        target: positions,
+        dropped_in_a_row: 0,
+        error: None,
+    });
+    std::thread::scope(|scope| {
+        for index in 0..threads.max(1) {
+            let (shared, net) = (&shared, net.clone());
+            scope.spawn(move || {
+                let mut searcher = Searcher::new(4);
+                searcher.set_network(net);
+                let mut rng = Rng::new(seed.wrapping_add(index as u64));
+                loop {
+                    if shared.lock().unwrap().done() {
+                        return;
+                    }
+                    let game = play_game(&mut searcher, &mut rng, settings);
+                    let mut state = shared.lock().unwrap();
+                    match game {
+                        Some(game) => {
+                            state.dropped_in_a_row = 0;
+                            if !state.done() {
+                                state.accept(game);
+                            }
+                        }
+                        None => {
+                            state.dropped_in_a_row += 1;
+                            if state.dropped_in_a_row >= MAX_DROPPED_IN_A_ROW && state.error.is_none() {
+                                state.error = Some(std::io::Error::new(
+                                    std::io::ErrorKind::Other,
+                                    format!("{MAX_DROPPED_IN_A_ROW} games in a row were unusable"),
+                                ));
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+    let state = shared.into_inner().unwrap();
+    match state.error {
+        Some(e) => Err(e),
+        None => Ok(state.summary),
+    }
 }
