@@ -2,6 +2,7 @@
 
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 
 API = "https://api.runpod.io/v2"
@@ -60,5 +61,23 @@ def delete_pod(key: str, id: str, send=urllib.request.urlopen) -> None:
     _call(key, "DELETE", f"/pods/{id}", None, send, gone_ok=True)
 
 
+MAX_PAGES = 20
+
+
 def list_pods(key: str, send=urllib.request.urlopen) -> list[dict]:
-    return _call(key, "GET", "/pods", None, send) or []
+    """Every pod of the account. The API answers an object with `pods` and a `pagination.nextCursor`."""
+    pods: list[dict] = []
+    cursor = None
+    for _ in range(MAX_PAGES):
+        path = "/pods" if cursor is None else "/pods?" + urllib.parse.urlencode({"cursor": cursor})
+        reply = _call(key, "GET", path, None, send)
+        if isinstance(reply, list):
+            return [p for p in reply if isinstance(p, dict)]
+        if not isinstance(reply, dict):
+            return pods
+        pods += [p for p in reply.get("pods") or [] if isinstance(p, dict)]
+        pagination = reply.get("pagination")
+        cursor = pagination.get("nextCursor") if isinstance(pagination, dict) else None
+        if not cursor:
+            break
+    return pods

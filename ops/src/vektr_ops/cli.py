@@ -21,7 +21,8 @@ from vektr_ops.sync import engine_dir
 ACCOUNT = "Vektr64"
 SERVICE = "vektr64"
 
-app = typer.Typer(no_args_is_help=True, add_completion=False)
+# Tracebacks never show local variables: they would print tokens held in them.
+app = typer.Typer(no_args_is_help=True, add_completion=False, pretty_exceptions_show_locals=False)
 
 
 def repo_root() -> Path:
@@ -254,7 +255,7 @@ def train(
     store = the_store(root)
     try:
         record = training.run_training(store, root, run, minutes=minutes, shards=shards, env=load_env(root))
-    except (RuntimeError, ValueError, OSError) as error:
+    except (RuntimeError, ValueError, OSError, StoreUnavailable) as error:
         typer.echo(f"error: {error}")
         raise typer.Exit(1)
     typer.echo(f"net: {record['net']} val_loss={record.get('val_loss')} stored as runs/{run}/")
@@ -311,8 +312,11 @@ def burst(
             if not pods:
                 typer.echo("no pods")
         else:
-            killed = burst_mod.kill_all(key, api=api)
+            killed, failed = burst_mod.kill_all(key, api=api)
             typer.echo(f"deleted: {', '.join(killed)}" if killed else "no pods")
+            if failed:
+                typer.echo(f"error: could not delete: {', '.join(failed)}; check the RunPod console", err=True)
+                raise typer.Exit(1)
         return
 
     if minutes is None:
@@ -369,9 +373,43 @@ def burst(
     except typer.Exit:
         finished = False
     if not finished:
+        _show_burst_log(root, run)
         typer.echo(f"error: the pod is gone but run {run} has no network in the store; start again with --run {run}")
         raise typer.Exit(1)
     typer.echo(f"network ready: vektr-ops install-net {run}")
+
+
+def _show_burst_log(root: Path, run: str) -> None:
+    """Print the failed pod's own output (`runs/<run>/burst.log`) when it left one in the store."""
+    from vektr_ops import burst as burst_mod
+
+    try:
+        env = load_env(root)
+        raw = open_store(env).read_bytes("nets", f"runs/{run}/burst.log")
+    except Exception:
+        return
+    if raw:
+        typer.echo(f"--- runs/{run}/burst.log ---")
+        typer.echo(burst_mod.redact(raw.decode(errors="replace"), env).rstrip())
+        typer.echo("--- end of burst.log ---")
+
+
+@app.command("burst-log")
+def burst_log(
+    file: Path = typer.Argument(..., help="The text to upload: the tail of a pod's output."),
+    run: str = typer.Option(..., "--run", help="Run id; the text goes to nets:runs/<run>/burst.log."),
+) -> None:
+    """Upload a failed burst's output to the store, with every token value replaced by ***."""
+    from vektr_ops import burst as burst_mod
+
+    root = repo_root()
+    env = load_env(root)
+    try:
+        text = burst_mod.redact(file.read_text(errors="replace"), env)
+        open_store(env).write_bytes("nets", f"runs/{run}/burst.log", text.encode(), overwrite=True)
+    except (OSError, StoreUnavailable) as error:
+        typer.echo(f"error: {error}")
+        raise typer.Exit(1)
 
 
 def engine_check(root: Path) -> list[str]:

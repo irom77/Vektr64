@@ -1,6 +1,7 @@
 import io
 import json
 import urllib.error
+import urllib.parse
 
 import pytest
 
@@ -61,5 +62,31 @@ def test_delete_treats_404_as_gone():
     assert [r.get_method() for r in seen] == ["DELETE", "DELETE"]
 
 
-def test_list_returns_the_pods():
+def test_list_reads_the_documented_object_shape():
+    reply = b'{"pods": [{"id": "a"}], "pagination": {"nextCursor": null}}'
+    assert runpod.list_pods("k", send=fake_send(reply)) == [{"id": "a"}]
+
+
+def test_list_tolerates_a_bare_array():
     assert runpod.list_pods("k", send=fake_send(b'[{"id": "a"}]')) == [{"id": "a"}]
+
+
+def test_list_follows_the_cursor_across_pages():
+    pages = {
+        None: b'{"pods": [{"id": "a"}], "pagination": {"nextCursor": "c1"}}',
+        "c1": b'{"pods": [{"id": "b"}], "pagination": {"nextCursor": null}}',
+    }
+    seen = []
+
+    def send(request, timeout=None):
+        seen.append(request.full_url)
+        cursor = urllib.parse.parse_qs(urllib.parse.urlparse(request.full_url).query).get("cursor", [None])[0]
+        return Response(pages[cursor])
+
+    assert runpod.list_pods("k", send=send) == [{"id": "a"}, {"id": "b"}]
+    assert "cursor=c1" in seen[1] and "cursor" not in seen[0]
+
+
+def test_list_stops_following_a_cursor_that_never_ends():
+    reply = b'{"pods": [{"id": "a"}], "pagination": {"nextCursor": "again"}}'
+    assert len(runpod.list_pods("k", send=fake_send(reply))) <= 50

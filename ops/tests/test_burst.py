@@ -1,3 +1,4 @@
+import http.client
 import os
 import shutil
 import subprocess
@@ -19,7 +20,8 @@ class FakeApi:
 
     RunpodError = runpod.RunpodError
 
-    def __init__(self, creates=(), pods=(), states=()):
+    def __init__(self, creates=(), pods=(), states=(), delete_fails=()):
+        self.delete_fails = set(delete_fails)
         self.creates = list(creates)  # each: a pod dict or a RunpodError to raise
         self.pods = list(pods)
         self.states = list(states)  # answers of get_pod, in order; the last repeats
@@ -37,12 +39,14 @@ class FakeApi:
     def get_pod(self, key, id):
         self.calls.append(("get", id))
         answer = self.states.pop(0) if len(self.states) > 1 else self.states[0]
-        if isinstance(answer, Exception):
+        if isinstance(answer, BaseException):
             raise answer
         return answer
 
     def delete_pod(self, key, id):
         self.calls.append(("delete", id))
+        if id in self.delete_fails:
+            raise runpod.RunpodError(500, "cannot delete")
 
     def list_pods(self, key):
         return self.pods
@@ -65,27 +69,78 @@ def test_the_hard_limit_is_setup_plus_training():
     assert hard_limit(45) == 3900
 
 
-def test_a_failing_start_deletes_the_pod(tmp_path):
+def run_pod_script(tmp_path, uploader=None, timeout_s=1):
+    """Execute the generated pod script with stub runpodctl and curl (and optionally vektr-ops)."""
     import signal
 
     stubs = tmp_path / "bin"
     stubs.mkdir()
     record = tmp_path / "record"
     (stubs / "runpodctl").write_text(f'#!/bin/sh\necho "$@" >> {record}\n')
-    (stubs / "curl").write_text("#!/bin/sh\nexit 22\n")
+    (stubs / "curl").write_text("#!/bin/sh\necho 'curl: the download broke' >&2\nexit 22\n")
+    if uploader is not None:
+        (stubs / "vektr-ops").write_text(uploader.replace("RECORD", str(record)))
     for f in stubs.iterdir():
         f.chmod(0o755)
-    env = {"PATH": f"{stubs}:/usr/bin:/bin", "RUNPOD_POD_ID": "pod42"}
+    env = {
+        "PATH": f"{stubs}:/usr/bin:/bin", "RUNPOD_POD_ID": "pod42", "VEKTR_RUN": "r1",
+        "VEKTR_UPLOAD_TIMEOUT": str(timeout_s),
+    }
     with open(tmp_path / "out", "wb") as out:
-        proc = subprocess.Popen(
-            start_cmd("abc", 30), env=env, stdout=out, stderr=out, start_new_session=True
-        )
+        proc = subprocess.Popen(start_cmd("abc", 30), env=env, stdout=out, stderr=out, start_new_session=True)
         try:
             code = proc.wait(timeout=20)
         finally:
             os.killpg(proc.pid, signal.SIGKILL)  # the watchdog's sleep must not outlive the test
+    return code, record.read_text().strip().splitlines()
+
+
+def test_a_failing_start_deletes_the_pod(tmp_path):
+    code, record = run_pod_script(tmp_path)
     assert code != 0
-    assert record.read_text().strip().splitlines() == ["pod delete pod42"]
+    assert record == ["pod delete pod42"]
+
+
+UPLOADERS = {
+    "works": '#!/bin/sh\necho "$@" > RECORD.args\ncp "$4" RECORD.log\n',
+    "fails": "#!/bin/sh\nexit 3\n",
+    "hangs": "#!/bin/sh\nexec sleep 30\n",
+    "absent": None,
+}
+
+
+@pytest.mark.parametrize("kind", UPLOADERS)
+def test_the_pod_is_deleted_once_whatever_the_log_upload_does(tmp_path, kind):
+    code, record = run_pod_script(tmp_path, UPLOADERS[kind])
+    assert code != 0
+    assert record == ["pod delete pod42"]
+
+
+def test_a_failed_start_uploads_the_output_tail_before_deleting(tmp_path):
+    run_pod_script(tmp_path, UPLOADERS["works"])
+    assert (tmp_path / "record.args").read_text().startswith("burst-log --run r1 ")
+    assert "curl: the download broke" in (tmp_path / "record.log").read_text()
+
+
+def test_the_log_is_not_uploaded_when_the_script_succeeded(tmp_path):
+    import signal
+
+    stubs = tmp_path / "bin"
+    stubs.mkdir()
+    (stubs / "runpodctl").write_text("#!/bin/sh\ntrue\n")
+    (stubs / "curl").write_text("#!/bin/sh\nexit 0\n")
+    (stubs / "bash").write_text("#!/bin/sh\nexit 0\n")  # stands in for the downloaded script
+    (stubs / "vektr-ops").write_text(f"#!/bin/sh\ntouch {tmp_path}/uploaded\n")
+    for f in stubs.iterdir():
+        f.chmod(0o755)
+    env = {"PATH": f"{stubs}:/usr/bin:/bin", "RUNPOD_POD_ID": "p", "VEKTR_RUN": "r1"}
+    script = start_cmd("abc", 30)[2]
+    proc = subprocess.Popen(["/bin/bash", "-c", script], env=env, start_new_session=True)
+    try:
+        assert proc.wait(timeout=20) == 0
+    finally:
+        os.killpg(proc.pid, signal.SIGKILL)
+    assert not (tmp_path / "uploaded").exists()
 
 
 def test_the_token_is_only_in_env():
@@ -105,6 +160,40 @@ def test_a_network_error_during_create_stops_and_says_to_kill(failure):
     with pytest.raises(BurstFailed, match="burst --kill"):
         launch("k", bodies(), api=api)
     assert [c for c in api.calls if c[0] == "create"] == [("create", GPUS[0])]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [runpod.RunpodError(500, "oops"), runpod.RunpodError(502, "bad gateway"), runpod.RunpodError(0, "?"),
+     http.client.IncompleteRead(b"x"), http.client.BadStatusLine("x")],
+)
+def test_an_ambiguous_create_failure_removes_a_pod_named_for_the_run(failure):
+    api = FakeApi(
+        creates=[failure, {"id": "p2", "cost": 0.2}],
+        pods=[{"id": "x", "name": "vektr64-r1"}, {"id": "y", "name": "vektr64-other"}],
+    )
+    with pytest.raises(BurstFailed, match="burst --kill"):
+        launch("k", bodies(), api=api)
+    assert api.deleted() == ["x"]
+    assert [c for c in api.calls if c[0] == "create"] == [("create", GPUS[0])]
+
+
+def test_a_failing_cleanup_still_ends_in_burst_failed_with_guidance():
+    class Broken(FakeApi):
+        def list_pods(self, key):
+            raise OSError("down")
+
+    api = Broken(creates=[runpod.RunpodError(503, "x")])
+    with pytest.raises(BurstFailed, match="burst --kill"):
+        launch("k", bodies(), api=api)
+
+
+@pytest.mark.parametrize("status", [401, 402, 404, 422])
+def test_a_clean_refusal_does_not_touch_other_pods(status):
+    api = FakeApi(creates=[runpod.RunpodError(status, "no")], pods=[{"id": "x", "name": "vektr64-r1"}])
+    with pytest.raises(BurstFailed):
+        launch("k", bodies(), api=api)
+    assert api.deleted() == []
 
 
 def test_a_reply_without_an_id_stops_and_says_to_kill():
@@ -146,6 +235,32 @@ def test_insufficient_balance_stops_at_once():
     assert [c for c in api.calls if c[0] == "create"] == [("create", GPUS[0])]
 
 
+@pytest.mark.parametrize(
+    "garbage", [ValueError("bad json"), http.client.IncompleteRead(b"x"), "not a dict", ["x"], KeyError("k")]
+)
+def test_watch_treats_any_garbled_poll_as_unknown(garbage):
+    api = FakeApi(states=[{"status": "RUNNING"}, garbage, {"status": "RUNNING"}, None])
+    assert watch("k", "p1", 100, api=api, sleep=lambda s: None) == "gone"
+    assert api.deleted() == []
+
+
+def test_a_404_before_the_pod_was_ever_seen_is_not_gone():
+    api = FakeApi(states=[None, None, {"status": "RUNNING"}, None])
+    assert watch("k", "p1", 100, api=api, sleep=lambda s: None) == "gone"
+    assert [c for c in api.calls if c[0] == "get"] == [("get", "p1")] * 4
+
+
+def test_a_pod_never_seen_is_still_deleted_at_the_deadline():
+    now = [0.0]
+    api = FakeApi(states=[None])
+
+    def sleep(s):
+        now[0] += s
+
+    result = watch("k", "p1", 100, api=api, sleep=sleep, clock=lambda: now[0], poll_s=30)
+    assert result.startswith("deleted") and api.deleted() == ["p1"]
+
+
 def test_watch_returns_when_the_pod_is_gone():
     api = FakeApi(states=[{"status": "RUNNING"}, None])
     assert watch("k", "p1", 100, api=api, sleep=lambda s: None) == "gone"
@@ -171,13 +286,22 @@ def test_watch_deletes_a_pod_that_outlives_the_hard_limit():
 
 
 def test_watch_survives_a_failed_poll():
-    api = FakeApi(states=[runpod.RunpodError(500, "oops"), None])
+    api = FakeApi(states=[{"status": "RUNNING"}, runpod.RunpodError(500, "oops"), None])
     assert watch("k", "p1", 100, api=api, sleep=lambda s: None) == "gone"
 
 
 def test_kill_all_touches_only_our_pods():
     api = FakeApi(pods=[{"id": "a", "name": "vektr64-r1"}, {"id": "b", "name": "other"}])
-    assert kill_all("k", api=api) == ["a"] and api.deleted() == ["a"]
+    assert kill_all("k", api=api) == (["a"], []) and api.deleted() == ["a"]
+
+
+def test_kill_all_continues_past_a_failed_delete_and_reports_it():
+    api = FakeApi(
+        pods=[{"id": "a", "name": "vektr64-r1"}, {"id": "b", "name": "vektr64-r2"}], delete_fails=["a"]
+    )
+    killed, failed = kill_all("k", api=api)
+    assert killed == ["b"] and api.deleted() == ["a", "b"]
+    assert len(failed) == 1 and failed[0].startswith("a ")
 
 
 # --- the command ---------------------------------------------------------------------------
@@ -191,6 +315,7 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "vektr_ops.cli.runpod_api", lambda: pytest.fail("a test reached for the real RunPod client")
     )
+    monkeypatch.setattr("vektr_ops.burst.time.sleep", lambda s: None)
     monkeypatch.setattr("vektr_ops.cli.resolve_commit", lambda root, ref: "c" * 40)
     monkeypatch.setattr("vektr_ops.cli.is_pushed", lambda root, commit: True)
     return tmp_path
@@ -207,7 +332,7 @@ GOOD = {"id": "p1", "cost": 0.2, "status": "RUNNING"}
 
 
 def test_burst_command_never_prints_a_token(isolated, monkeypatch):
-    api = FakeApi(creates=[GOOD], states=[None])
+    api = FakeApi(creates=[GOOD], states=[{"status": "RUNNING"}, None])
     configured(monkeypatch, isolated, api)
     r = CliRunner().invoke(app, ["burst", "--minutes", "45", "--run", "r1", "--yes"])
     assert "hf_SECRET" not in r.output and "rpa_SECRET" not in r.output
@@ -217,7 +342,7 @@ def test_burst_command_never_prints_a_token(isolated, monkeypatch):
 
 
 def test_burst_succeeds_when_the_network_is_in_the_store(isolated, monkeypatch):
-    api = FakeApi(creates=[GOOD], states=[None])
+    api = FakeApi(creates=[GOOD], states=[{"status": "RUNNING"}, None])
     configured(monkeypatch, isolated, api)
     LocalStore(isolated / "store").write_bytes("nets", "runs/r1/net.vknn", b"n")
     r = CliRunner().invoke(app, ["burst", "--minutes", "45", "--run", "r1", "--yes"])
@@ -225,7 +350,7 @@ def test_burst_succeeds_when_the_network_is_in_the_store(isolated, monkeypatch):
 
 
 def test_the_default_cloud_is_secure_and_is_shown(isolated, monkeypatch):
-    api = FakeApi(creates=[GOOD], states=[None])
+    api = FakeApi(creates=[GOOD], states=[{"status": "RUNNING"}, None])
     configured(monkeypatch, isolated, api)
     r = CliRunner().invoke(app, ["burst", "--minutes", "45", "--run", "r1", "--yes"])
     assert api.bodies[0]["cloud"] == "SECURE" and "SECURE" in r.output
@@ -233,7 +358,7 @@ def test_the_default_cloud_is_secure_and_is_shown(isolated, monkeypatch):
 
 
 def test_community_cloud_is_opt_in_and_case_insensitive(isolated, monkeypatch):
-    api = FakeApi(creates=[GOOD], states=[None])
+    api = FakeApi(creates=[GOOD], states=[{"status": "RUNNING"}, None])
     configured(monkeypatch, isolated, api)
     r = CliRunner().invoke(app, ["burst", "--minutes", "45", "--run", "r1", "--yes", "--cloud", "Community"])
     assert api.bodies[0]["cloud"] == "COMMUNITY" and "COMMUNITY" in r.output
@@ -247,7 +372,7 @@ def test_an_unknown_cloud_exits_2(isolated, monkeypatch):
 
 
 def test_the_burst_token_is_preferred_and_nothing_is_printed(isolated, monkeypatch):
-    api = FakeApi(creates=[GOOD], states=[None])
+    api = FakeApi(creates=[GOOD], states=[{"status": "RUNNING"}, None])
     configured(monkeypatch, isolated, api)
     monkeypatch.setenv("HF_BURST_TOKEN", "hf_BURSTSECRET")
     r = CliRunner().invoke(app, ["burst", "--minutes", "45", "--run", "r1", "--yes"])
@@ -271,11 +396,23 @@ def test_an_interrupt_after_the_pod_exists_deletes_it(isolated, monkeypatch):
     assert api.deleted() == ["p1"]
 
 
-def test_an_unexpected_error_after_the_pod_exists_deletes_it(isolated, monkeypatch):
-    api = FakeApi(creates=[GOOD], states=[ValueError("boom")])
+def test_an_error_outside_the_poll_after_the_pod_exists_deletes_it(isolated, monkeypatch):
+    api = FakeApi(creates=[GOOD], states=[{"status": "RUNNING"}])
     configured(monkeypatch, isolated, api)
+
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("vektr_ops.burst.watch", boom)
     r = CliRunner().invoke(app, ["burst", "--minutes", "45", "--run", "r1", "--yes"])
     assert r.exit_code != 0 and api.deleted() == ["p1"]
+
+
+def test_a_garbled_poll_does_not_delete_a_healthy_pod_in_the_command(isolated, monkeypatch):
+    api = FakeApi(creates=[GOOD], states=[{"status": "RUNNING"}, ValueError("boom"), None])
+    configured(monkeypatch, isolated, api)
+    CliRunner().invoke(app, ["burst", "--minutes", "45", "--run", "r1", "--yes"])
+    assert api.deleted() == []
 
 
 def test_a_pod_above_the_cap_is_never_kept_by_the_command(isolated, monkeypatch):
@@ -319,6 +456,44 @@ def test_list_and_kill_only_show_our_pods(isolated, monkeypatch):
     assert "vektr64-r1" in listed.output and "other" not in listed.output
     killed = CliRunner().invoke(app, ["burst", "--kill"])
     assert "a" in killed.output and api.deleted() == ["a"]
+
+
+def test_kill_exits_non_zero_and_names_the_pods_it_could_not_delete(isolated, monkeypatch):
+    api = FakeApi(
+        pods=[{"id": "a", "name": "vektr64-r1"}, {"id": "b", "name": "vektr64-r2"}], delete_fails=["a"]
+    )
+    configured(monkeypatch, isolated, api)
+    r = CliRunner().invoke(app, ["burst", "--kill"])
+    assert r.exit_code == 1 and api.deleted() == ["a", "b"]
+    assert "deleted: b" in r.output and "could not delete: a" in r.output
+
+
+def test_a_failed_burst_shows_the_log_the_pod_left_in_the_store(isolated, monkeypatch):
+    api = FakeApi(creates=[GOOD], states=[{"status": "RUNNING"}, None])
+    configured(monkeypatch, isolated, api)
+    LocalStore(isolated / "store").write_bytes("nets", "runs/r1/burst.log", b"pip exploded\n")
+    r = CliRunner().invoke(app, ["burst", "--minutes", "45", "--run", "r1", "--yes"])
+    assert r.exit_code == 1 and "pip exploded" in r.output
+    assert r.output.index("pip exploded") < r.output.index("start again")
+
+
+def test_burst_log_uploads_with_every_secret_redacted(isolated, monkeypatch, tmp_path):
+    secrets = {"HF_TOKEN": "hf_AAA", "HF_BURST_TOKEN": "hf_BBB", "RUNPOD_API_KEY": "rpa_CCC", "LICHESS_TOKEN": "lip_DDD"}
+    for name, value in secrets.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("VEKTR_STORE", str(tmp_path / "store"))
+    log = tmp_path / "tail.log"
+    log.write_text("boom hf_AAA and hf_BBB then rpa_CCC / lip_DDD twice lip_DDD\n")
+    r = CliRunner().invoke(app, ["burst-log", "--run", "r9", str(log)])
+    assert r.exit_code == 0, r.output
+    stored = LocalStore(tmp_path / "store").read_bytes("nets", "runs/r9/burst.log").decode()
+    assert stored == "boom *** and *** then *** / *** twice ***\n"
+    again = CliRunner().invoke(app, ["burst-log", "--run", "r9", str(log)])  # overwrite is allowed
+    assert again.exit_code == 0
+
+
+def test_the_app_never_shows_locals_in_tracebacks():
+    assert app.pretty_exceptions_show_locals is False
 
 
 @pytest.mark.slow
