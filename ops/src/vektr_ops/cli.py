@@ -231,6 +231,48 @@ def prep(
 
 
 @app.command()
+def train(
+    run: str = typer.Option(..., "--run", help="Run id; an existing run resumes from its checkpoint."),
+    minutes: float = typer.Option(..., "--minutes", help="Training time budget in minutes."),
+    shards: int = typer.Option(None, "--shards", help="Use only the first N shards."),
+) -> None:
+    """Train a network on the prepared shards; checkpoints and results go to the store."""
+    from vektr_ops import training
+
+    root = repo_root()
+    store = the_store(root)
+    try:
+        record = training.run_training(store, root, run, minutes=minutes, shards=shards, env=load_env(root))
+    except (RuntimeError, ValueError, OSError) as error:
+        typer.echo(f"error: {error}")
+        raise typer.Exit(1)
+    typer.echo(f"net: {record['net']} val_loss={record.get('val_loss')} stored as runs/{run}/")
+
+
+@app.command("install-net")
+def install_net(run: str = typer.Argument(..., help="Run id whose network becomes the default.")) -> None:
+    """Install a trained network into the engine, build it and check it against the reference."""
+    from vektr_ops import training
+
+    root = repo_root()
+    store = the_store(root)
+    try:
+        net = training.install_net(store, root, run)
+    except KeyError as error:
+        typer.echo(f"error: {error.args[0]}")
+        raise typer.Exit(2)
+    build_engine(root)
+    done = subprocess.run(
+        [str(root / "engine" / "target" / "release" / "vektr"), "netcheck"],
+        capture_output=True, text=True,
+    )
+    if done.returncode != 0:
+        typer.echo(done.stdout + done.stderr, err=True)
+        raise typer.Exit(1)
+    typer.echo(f"installed {net}: {done.stdout.strip()}")
+
+
+@app.command()
 def sync() -> None:
     """On the play machine: follow the manifest's champion and send game records to the store."""
     from vektr_ops import sync as sync_mod
