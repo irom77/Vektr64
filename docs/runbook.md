@@ -35,12 +35,17 @@ laptop, and some credit in the RunPod account.
 1. **Prepare data** (once; about 4 GB streamed from Lichess): `vektr-ops prep --positions 30000000`
    uploads the shards to the private data repo.
 2. **Push the commit** you are on: the pod clones it from GitHub.
-3. **Start a burst:** `vektr-ops burst --minutes 45 --run first-<date>`. It tries four GPU types
-   in turn on the community cloud, rejects any pod quoted above `--max-rate` (default $0.60 an
-   hour), then prints the GPU, the hourly rate and `worst case $...` (the rate over the pod's
-   hard time limit) and asks to continue; `--yes` skips the question and answering no deletes
-   the pod. The launcher then waits until the pod is gone and checks that the network is in the store.
-4. **Cleanup is layered.** Inside the pod a watchdog deletes it after the hard limit and an exit
+3. **Start a burst:** `vektr-ops burst --minutes 45 --run first-<date>`. It uses RunPod's secure
+   cloud; `--cloud community` is cheaper but runs on third-party hosts. It tries four GPU types
+   in turn, rejects any pod quoted above `--max-rate` (default $0.60 an hour), then prints the GPU,
+   the cloud, the hourly rate and `worst case $...` (the rate over the pod's hard limit: 20 minutes
+   of setup plus the training time, 65 minutes for `--minutes 45`) and asks to continue; `--yes`
+   skips the question and answering no deletes the pod. The launcher then waits until the pod is
+   gone and checks that the network is in the store.
+   The pod receives `HF_BURST_TOKEN` as its `HF_TOKEN` when that is set, otherwise your full
+   `HF_TOKEN` (the launcher says so). Prefer a fine-grained Hugging Face token limited to the two
+   `vektr64-*` repos, put in `.env` as `HF_BURST_TOKEN`.
+4. **Cleanup is layered.** Inside the pod a watchdog deletes it after the hard limit (65 minutes for a 45-minute run) and an exit
    trap deletes it however the script ends; the launcher deletes it if it stops or overstays,
    and on Ctrl-C or any error. Afterwards `vektr-ops burst --list` should show no pods. If it
    shows one, `vektr-ops burst --kill` deletes every pod this tool started (by the `vektr64-`

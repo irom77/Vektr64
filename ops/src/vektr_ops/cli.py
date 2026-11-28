@@ -276,6 +276,7 @@ def burst(
     list_pods: bool = typer.Option(False, "--list", help="List the pods this tool started."),
     kill: bool = typer.Option(False, "--kill", help="Delete every pod this tool started."),
     local: bool = typer.Option(False, "--local", help="Run the burst script on this machine; no RunPod."),
+    cloud: str = typer.Option("secure", "--cloud", help="RunPod cloud: secure (default) or community."),
 ) -> None:
     """Rent a GPU pod that trains a network, uploads it and always deletes itself."""
     from vektr_ops import burst as burst_mod
@@ -317,7 +318,12 @@ def burst(
     if minutes is None:
         typer.echo("error: give --minutes (or --list, --kill, --local)")
         raise typer.Exit(2)
-    token = env.get("HF_TOKEN", "")
+    cloud = cloud.upper()
+    if cloud not in ("SECURE", "COMMUNITY"):
+        typer.echo("error: --cloud must be secure or community")
+        raise typer.Exit(2)
+    burst_token = env.get("HF_BURST_TOKEN", "")
+    token = burst_token or env.get("HF_TOKEN", "")
     if not token:
         typer.echo("error: HF_TOKEN is not set; the pod needs it to read the data and store the network")
         raise typer.Exit(2)
@@ -328,7 +334,12 @@ def burst(
     run = run or "burst-" + utc_now().replace(":", "").replace("-", "")
     rate_cap = burst_mod.MAX_RATE if max_rate is None else max_rate
     hard_s = burst_mod.hard_limit(minutes)
-    bodies = [burst_mod.pod_body(run, commit, minutes, token, gpu) for gpu in burst_mod.GPUS]
+    if not burst_token:
+        typer.echo(
+            "note: the pod gets your full HF_TOKEN; set HF_BURST_TOKEN to a fine-grained token "
+            "limited to the two vektr64-* repos"
+        )
+    bodies = [burst_mod.pod_body(run, commit, minutes, token, gpu, cloud) for gpu in burst_mod.GPUS]
     try:
         pod = burst_mod.launch(key, bodies, max_rate=rate_cap, api=api)
     except burst_mod.BurstFailed as error:
@@ -339,7 +350,7 @@ def burst(
     gone = False
     try:
         rate = float(pod["cost"])
-        typer.echo(f"pod {pod_id}: {pod.get('gpu', {}).get('id') or bodies[0]['gpu']['id']}, ${rate:.2f}/h")
+        typer.echo(f"pod {pod_id}: {pod.get('gpu', {}).get('id') or bodies[0]['gpu']['id']}, ${rate:.2f}/h, {cloud} cloud")
         typer.echo(f"worst case ${rate * hard_s / 3600:.2f} (the pod removes itself after {hard_s // 60} minutes)")
         if not yes and not typer.confirm("continue?", default=False):
             typer.echo("cancelled; deleting the pod")

@@ -25,7 +25,7 @@ class BurstFailed(Exception):
 
 def hard_limit(minutes: float) -> int:
     """Seconds after which the pod removes itself, whatever it is doing."""
-    return SETUP_S + int(minutes * 60) + 600
+    return SETUP_S + int(minutes * 60)
 
 
 def start_cmd(commit: str, hard_s: int) -> list[str]:
@@ -43,13 +43,13 @@ def start_cmd(commit: str, hard_s: int) -> list[str]:
     return ["bash", "-c", script]
 
 
-def pod_body(run: str, commit: str, minutes: float, hf_token: str, gpu: str) -> dict:
+def pod_body(run: str, commit: str, minutes: float, hf_token: str, gpu: str, cloud: str = "SECURE") -> dict:
     """The create request. The token travels only in `env`, never in the name or the command."""
     return {
         "name": f"{NAME_PREFIX}{run}",
         "image": IMAGE,
         "gpu": {"id": gpu, "count": 1},
-        "cloud": "COMMUNITY",
+        "cloud": cloud,
         "disk": 20,
         "env": {
             "HF_TOKEN": hf_token,
@@ -72,19 +72,26 @@ def launch(key: str, bodies: list[dict], *, max_rate: float = MAX_RATE, api=runp
         gpu = body["gpu"]["id"]
         try:
             pod = api.create_pod(key, body)
+            pod_id = pod["id"]
         except runpod.RunpodError as error:
             if error.status in (400, 403):
                 notes.append(f"{gpu}: {error.message}")
                 continue
             raise BurstFailed(f"{gpu}: {error}") from error
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            # The request may have been accepted: a pod could exist whose id we never saw.
+            raise BurstFailed(
+                f"{gpu}: the create call failed ({type(error).__name__}: {error}) and a pod may be running; "
+                "run `vektr-ops burst --kill` and check the RunPod console"
+            ) from error
         cost = pod.get("cost")
         if isinstance(cost, (int, float)) and cost <= max_rate:
             return pod
         try:
-            api.delete_pod(key, pod["id"])
+            api.delete_pod(key, pod_id)
         except Exception as error:
             raise BurstFailed(
-                f"pod {pod['id']} costs {cost} USD/h, above the cap, and could not be deleted ({error}); "
+                f"pod {pod_id} costs {cost} USD/h, above the cap, and could not be deleted ({error}); "
                 "run `vektr-ops burst --kill`"
             ) from error
         notes.append(f"{gpu}: rate {cost} USD/h is above the cap of {max_rate}")

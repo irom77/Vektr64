@@ -8,7 +8,7 @@ from typer.testing import CliRunner
 
 from vektr_ops import runpod
 from vektr_ops.burst import (
-    GPUS, BurstFailed, kill_all, launch, pod_body, start_cmd, watch,
+    GPUS, BurstFailed, hard_limit, kill_all, launch, pod_body, start_cmd, watch,
 )
 from vektr_ops.cli import app
 from vektr_ops.store import LocalStore
@@ -24,9 +24,11 @@ class FakeApi:
         self.pods = list(pods)
         self.states = list(states)  # answers of get_pod, in order; the last repeats
         self.calls = []
+        self.bodies = []
 
     def create_pod(self, key, body):
         self.calls.append(("create", body["gpu"]["id"]))
+        self.bodies.append(body)
         answer = self.creates.pop(0)
         if isinstance(answer, Exception):
             raise answer
@@ -59,10 +61,57 @@ def test_the_watchdog_and_trap_come_before_anything_else():
     assert script.startswith("(sleep 3900; runpodctl pod delete") and "raw.githubusercontent.com/irom77/Vektr64/abc123/deploy/burst.sh" in script
 
 
+def test_the_hard_limit_is_setup_plus_training():
+    assert hard_limit(45) == 3900
+
+
+def test_a_failing_start_deletes_the_pod(tmp_path):
+    import signal
+
+    stubs = tmp_path / "bin"
+    stubs.mkdir()
+    record = tmp_path / "record"
+    (stubs / "runpodctl").write_text(f'#!/bin/sh\necho "$@" >> {record}\n')
+    (stubs / "curl").write_text("#!/bin/sh\nexit 22\n")
+    for f in stubs.iterdir():
+        f.chmod(0o755)
+    env = {"PATH": f"{stubs}:/usr/bin:/bin", "RUNPOD_POD_ID": "pod42"}
+    with open(tmp_path / "out", "wb") as out:
+        proc = subprocess.Popen(
+            start_cmd("abc", 30), env=env, stdout=out, stderr=out, start_new_session=True
+        )
+        try:
+            code = proc.wait(timeout=20)
+        finally:
+            os.killpg(proc.pid, signal.SIGKILL)  # the watchdog's sleep must not outlive the test
+    assert code != 0
+    assert record.read_text().strip().splitlines() == ["pod delete pod42"]
+
+
 def test_the_token_is_only_in_env():
     body = pod_body("r1", "abc", 45, "hf_SECRET", GPUS[0])
     assert body["env"]["HF_TOKEN"] == "hf_SECRET" and "hf_SECRET" not in " ".join(body["cmd"]) + body["name"]
-    assert body["cloud"] == "COMMUNITY" and body["gpu"] == {"id": GPUS[0], "count": 1}
+    assert body["cloud"] == "SECURE" and body["gpu"] == {"id": GPUS[0], "count": 1}
+
+
+def test_the_default_cloud_is_secure():
+    assert pod_body("r1", "abc", 45, "t", GPUS[0])["cloud"] == "SECURE"
+    assert pod_body("r1", "abc", 45, "t", GPUS[0], cloud="COMMUNITY")["cloud"] == "COMMUNITY"
+
+
+@pytest.mark.parametrize("failure", [TimeoutError("timed out"), ValueError("bad json")])
+def test_a_network_error_during_create_stops_and_says_to_kill(failure):
+    api = FakeApi(creates=[failure, {"id": "p2", "cost": 0.2}])
+    with pytest.raises(BurstFailed, match="burst --kill"):
+        launch("k", bodies(), api=api)
+    assert [c for c in api.calls if c[0] == "create"] == [("create", GPUS[0])]
+
+
+def test_a_reply_without_an_id_stops_and_says_to_kill():
+    api = FakeApi(creates=[{"cost": 0.2}, {"id": "p2", "cost": 0.2}])
+    with pytest.raises(BurstFailed, match="burst --kill"):
+        launch("k", bodies(), api=api)
+    assert [c for c in api.calls if c[0] == "create"] == [("create", GPUS[0])]
 
 
 def test_the_next_gpu_is_tried_when_one_has_no_capacity():
@@ -173,6 +222,39 @@ def test_burst_succeeds_when_the_network_is_in_the_store(isolated, monkeypatch):
     LocalStore(isolated / "store").write_bytes("nets", "runs/r1/net.vknn", b"n")
     r = CliRunner().invoke(app, ["burst", "--minutes", "45", "--run", "r1", "--yes"])
     assert r.exit_code == 0 and "install-net r1" in r.output
+
+
+def test_the_default_cloud_is_secure_and_is_shown(isolated, monkeypatch):
+    api = FakeApi(creates=[GOOD], states=[None])
+    configured(monkeypatch, isolated, api)
+    r = CliRunner().invoke(app, ["burst", "--minutes", "45", "--run", "r1", "--yes"])
+    assert api.bodies[0]["cloud"] == "SECURE" and "SECURE" in r.output
+    assert "HF_BURST_TOKEN" in r.output  # the recommendation, since only HF_TOKEN is set
+
+
+def test_community_cloud_is_opt_in_and_case_insensitive(isolated, monkeypatch):
+    api = FakeApi(creates=[GOOD], states=[None])
+    configured(monkeypatch, isolated, api)
+    r = CliRunner().invoke(app, ["burst", "--minutes", "45", "--run", "r1", "--yes", "--cloud", "Community"])
+    assert api.bodies[0]["cloud"] == "COMMUNITY" and "COMMUNITY" in r.output
+
+
+def test_an_unknown_cloud_exits_2(isolated, monkeypatch):
+    api = FakeApi(creates=[GOOD])
+    configured(monkeypatch, isolated, api)
+    r = CliRunner().invoke(app, ["burst", "--minutes", "45", "--cloud", "moon"])
+    assert r.exit_code == 2 and api.calls == []
+
+
+def test_the_burst_token_is_preferred_and_nothing_is_printed(isolated, monkeypatch):
+    api = FakeApi(creates=[GOOD], states=[None])
+    configured(monkeypatch, isolated, api)
+    monkeypatch.setenv("HF_BURST_TOKEN", "hf_BURSTSECRET")
+    r = CliRunner().invoke(app, ["burst", "--minutes", "45", "--run", "r1", "--yes"])
+    assert api.bodies[0]["env"]["HF_TOKEN"] == "hf_BURSTSECRET"
+    for secret in ("hf_BURSTSECRET", "hf_SECRET", "rpa_SECRET"):
+        assert secret not in r.output
+    assert "HF_BURST_TOKEN" not in r.output  # no recommendation when it is set
 
 
 def test_declining_deletes_the_pod(isolated, monkeypatch):

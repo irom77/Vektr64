@@ -57,12 +57,13 @@ uv run --project ops vektr-ops page             # write the status page to site/
 uv run --project ops vektr-ops sync             # play machine only: follow the champion
 ```
 
-Training a network (needs `HF_TOKEN`, and `RUNPOD_API_KEY` for bursts; see the runbook):
+Training a network (needs `HF_TOKEN`, and `RUNPOD_API_KEY` for bursts, ideally with `HF_BURST_TOKEN`, a fine-grained token that is the only one sent to the pod; see the runbook):
 
 ```bash
 uv run --project ops vektr-ops prep --positions 30000000     # prepare training shards in the data store
 uv run --project ops vektr-ops train --run ID --minutes M    # train on this machine
 uv run --project ops vektr-ops burst --minutes 45 --run ID   # train on a rented GPU that deletes itself
+uv run --project ops vektr-ops burst --minutes 45 --cloud community   # cheaper, third-party hosts (default: secure)
 uv run --project ops vektr-ops burst --list                  # pods this tool started
 uv run --project ops vektr-ops burst --kill                  # delete them all
 uv run --project ops vektr-ops burst --local --minutes M     # dry run of the burst script here, no RunPod
