@@ -45,7 +45,8 @@ def netcheck(binary: Path) -> bool:
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
-    return done.returncode == 0 and done.stdout.startswith("netcheck ok")
+    ok = re.match(r"netcheck ok (\d+) positions", done.stdout)
+    return done.returncode == 0 and ok is not None and int(ok.group(1)) > 0
 
 
 def net_hash(root: Path, commit: str) -> str | None:

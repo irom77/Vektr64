@@ -249,6 +249,9 @@ pub fn netcheck(net: &Network, check: &str) -> Result<usize, Vec<String>> {
             errors.push(format!("mismatch {fen}: engine {got} trainer {expected}"));
         }
     }
+    if count == 0 && errors.is_empty() {
+        errors.push("the check file has no positions".to_string());
+    }
     if errors.is_empty() {
         Ok(count)
     } else {

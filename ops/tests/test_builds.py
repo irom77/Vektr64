@@ -108,6 +108,7 @@ def test_netcheck_is_true_only_for_the_ok_line(tmp_path):
     assert netcheck(script(tmp_path, 'echo "netcheck ok 256 positions"')) is True
     assert netcheck(script(tmp_path, 'echo "mismatch x"; exit 1')) is False
     assert netcheck(script(tmp_path, 'echo "netcheck ok 1 positions"; exit 1')) is False
+    assert netcheck(script(tmp_path, 'echo "netcheck ok 0 positions"')) is False
     assert netcheck(script(tmp_path, "cat >/dev/null")) is False  # an engine without the command
     assert netcheck(tmp_path / "missing") is False
 

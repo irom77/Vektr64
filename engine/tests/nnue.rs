@@ -184,6 +184,14 @@ fn netcheck_reports_a_disagreement() {
 }
 
 #[test]
+fn netcheck_with_no_positions_is_an_error() {
+    for check in ["", "\n  \n"] {
+        let err = netcheck(&Network::embedded(), check).unwrap_err();
+        assert!(err.iter().any(|l| l.contains("check file has no positions")), "{err:?}");
+    }
+}
+
+#[test]
 fn the_embedded_network_knows_material() {
     let net = Network::embedded();
     let no_queen = parse_fen("rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap();
