@@ -367,3 +367,26 @@ def test_the_run_record_lists_selfplay_shards(tmp_path):
     record = train(tmp_path, store, starter([], on_exit=finish), selfplay=2)
     assert record["shards"][-2:] == [f"selfplay/2026112{i}T000000Z-net{i % 2}-host-abcd.vkd.gz" for i in (3, 4)]
     assert len(record["shards"]) == 4
+
+
+def test_a_resumed_run_keeps_its_shard_selection(tmp_path):
+    store = selfplay_store(tmp_path)
+    first = train(tmp_path, store, starter([], on_exit=finish), selfplay=2)
+    store.write_bytes("data", "selfplay/20261129T000000Z-net0-host-abcd.vkd.gz", b"newer")
+    seen = []
+    again = train(tmp_path, store, starter([], seen=seen, on_exit=finish), selfplay=2)
+    assert again["shards"] == first["shards"]
+    assert not any("20261129" in p.name for p in (tmp_path / "state/train/r1/shards").iterdir())
+    other = run_training(store, tmp_path, "r2", minutes=1, env={"VEKTR_TRAINER_PYTHON": "py"},
+                         start=starter([], on_exit=finish), poll_s=0, selfplay=2)
+    assert "selfplay/20261129T000000Z-net0-host-abcd.vkd.gz" in other["shards"]
+
+
+def test_a_pinned_shard_missing_from_the_store_stops_before_training(tmp_path):
+    store = selfplay_store(tmp_path)
+    train(tmp_path, store, starter([], on_exit=finish), selfplay=2)
+    (tmp_path / "store/data/selfplay/20261124T000000Z-net0-host-abcd.vkd.gz").unlink()
+    started = []
+    with pytest.raises(FileNotFoundError, match="20261124"):
+        train(tmp_path, store, starter([], seen=started, on_exit=finish), selfplay=2)
+    assert started == []

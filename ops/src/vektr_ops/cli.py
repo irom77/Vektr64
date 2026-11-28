@@ -14,6 +14,7 @@ import yaml
 from vektr_ops import builds
 from vektr_ops import gate as gate_mod
 from vektr_ops import manifest, selfplay
+from vektr_ops.selfplay import PER_NET
 from vektr_ops.botconfig import load_env, render
 from vektr_ops.sizing import hash_mb
 from vektr_ops.store import Store, StoreUnavailable, open_store
@@ -275,7 +276,7 @@ def train(
     run: str = typer.Option(..., "--run", help="Run id; an existing run resumes from its checkpoint."),
     minutes: float = typer.Option(..., "--minutes", help="Training time budget in minutes."),
     shards: int = typer.Option(None, "--shards", help="Use only the first N shards."),
-    selfplay: int = typer.Option(120, "--selfplay", help="Also train on the newest N self-play shards (0 = none)."),
+    selfplay: int = typer.Option(PER_NET, "--selfplay", help="Also train on the newest N self-play shards (0 = none)."),
 ) -> None:
     """Train a network on the prepared shards; checkpoints and results go to the store."""
     from vektr_ops import training

@@ -216,6 +216,9 @@ def test_train_reports_a_failed_run_and_exits_1(monkeypatch, tmp_path):
     assert r.exit_code == 1 and "trainer exited with status 1" in r.output
 
 
+from vektr_ops.selfplay import PER_NET
+
+
 def test_train_passes_selfplay(monkeypatch, tmp_path):
     cli_setup(monkeypatch, tmp_path)
     seen = {}
@@ -228,7 +231,7 @@ def test_train_passes_selfplay(monkeypatch, tmp_path):
     r = CliRunner().invoke(app, ["train", "--run", "r1", "--minutes", "1", "--selfplay", "7"])
     assert r.exit_code == 0 and seen["selfplay"] == 7
     CliRunner().invoke(app, ["train", "--run", "r1", "--minutes", "1"])
-    assert seen["selfplay"] == 120
+    assert seen["selfplay"] == PER_NET
 
 
 def gate_setup(monkeypatch, tmp_path, net, passes):

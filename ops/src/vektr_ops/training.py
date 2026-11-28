@@ -19,20 +19,27 @@ def trainer_cmd(env: dict, module: str, *args: str) -> list[str]:
     return ["uv", "run", "--project", "trainer", "python", "-m", module, *args]
 
 
-def pull_shards(store: Store, dest: Path, limit: int | None = None, selfplay: int = PER_NET) -> list[str]:
+def pull_shards(store: Store, dest: Path, limit: int | None = None, selfplay: int = PER_NET, paths: list[str] | None = None
+) -> list[str]:
     """Fetch training shards into `dest`; returns their store paths.
 
     These are the first `limit` bootstrap shards by path, then the newest `selfplay` self-play shards
     (0 = none). Self-play names begin with a UTC time, so the last paths are the newest, whatever network
-    played them.
+    played them. With `paths`, exactly those shards are fetched and `limit`/`selfplay` are ignored;
+    one missing from the store raises FileNotFoundError.
 
     Local names are the store path with `/` as `__`, so they sort like the paths and never collide;
     files in `dest` that are not selected are removed, because the trainer reads every shard there.
     """
-    names = sorted(n for n in store.list("data", "bootstrap/") if n.endswith(".npz"))
-    names = names[:limit]
-    if selfplay > 0:
-        names += sorted(n for n in store.list("data", PREFIX) if n.endswith(SUFFIX))[-selfplay:]
+    boot = sorted(n for n in store.list("data", "bootstrap/") if n.endswith(".npz"))
+    played = sorted(n for n in store.list("data", PREFIX) if n.endswith(SUFFIX))
+    if paths is not None:
+        names = list(paths)
+        missing = [n for n in names if n not in {*boot, *played}]
+        if missing:
+            raise FileNotFoundError(f"pinned shards are no longer in the store: {', '.join(missing)}")
+    else:
+        names = boot[:limit] + (played[-selfplay:] if selfplay > 0 else [])
     dest.mkdir(parents=True, exist_ok=True)
     wanted = {n.replace("/", "__") for n in names}
     for old in dest.iterdir():
@@ -88,7 +95,12 @@ def run_training(
     out = work / "out"
     out.mkdir(parents=True, exist_ok=True)
     prefix = f"runs/{run}/"
-    paths = pull_shards(store, work / "shards", shards, selfplay)
+    pinned = store.read_bytes("nets", prefix + "shards.json")
+    if pinned is None:
+        paths = pull_shards(store, work / "shards", shards, selfplay)
+        store.write_bytes("nets", prefix + "shards.json", json.dumps(paths).encode(), overwrite=True)
+    else:  # a resumed run trains on the shards it started with, whatever the store holds now
+        paths = pull_shards(store, work / "shards", paths=json.loads(pinned))
 
     checkpoint = out / "checkpoint.pt"
     saved = store.read_bytes("nets", prefix + "checkpoint.pt")
