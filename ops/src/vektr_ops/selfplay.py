@@ -10,6 +10,8 @@ from pathlib import Path
 
 from vektr_ops import manifest
 from vektr_ops.builds import ensure_build
+from vektr_ops.gate import machine
+from vektr_ops.match import bot_here, concurrency
 from vektr_ops.store import Store
 
 SHARD_POSITIONS = 500_000
@@ -30,12 +32,14 @@ def shard_path(net: str, host: str, now: datetime, rand: str) -> str:
     return f"{PREFIX}{now.strftime('%Y%m%dT%H%M%SZ')}-{net}-{host}-{rand}{SUFFIX}"
 
 
-def net_of(path: str) -> str:
-    """The network part of a shard path (the host may itself contain hyphens)."""
-    return path.removeprefix(PREFIX).split("-")[1]
+def net_of(path: str) -> str | None:
+    """The network part of a shard path (the host may itself contain hyphens); None if it does not parse."""
+    parts = path.removeprefix(PREFIX).split("-")
+    return parts[1] if len(parts) >= 4 else None
 
 
 def shards_for(store: Store, net: str) -> list[str]:
+    """The shards played by `net`; a stray file in the store is skipped, not an error."""
     return [p for p in store.list("data", PREFIX) if p.endswith(SUFFIX) and net_of(p) == net]
 
 
@@ -144,3 +148,19 @@ def generate(
     store.write_bytes("data", path, target.read_bytes())
     target.unlink()
     return path
+
+
+def step(store: Store, root: Path, env: dict, *, commit: str, generate=generate) -> bool:
+    """Generate one shard if self-play is wanted and affordable now; True when one was generated."""
+    if env.get("VEKTR_DATAGEN") == "0":
+        return False
+    threads = concurrency(*machine(), bot_here())
+    if threads == 0:
+        return False
+    champion = manifest.load(store).champion_version()
+    if champion is None:
+        return False
+    if len(shards_for(store, champion.net or "none")) >= PER_NET:
+        return False
+    generate(store, root, commit=commit, threads=threads)
+    return True

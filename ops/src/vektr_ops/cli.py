@@ -95,7 +95,11 @@ def gate(
     root = repo_root()
     store = the_store(root)
     if work:
-        gate_mod.work(store, root)
+        gate_mod.work(
+            store,
+            root,
+            datagen=lambda: selfplay.step(store, root, load_env(root), commit=resolve_commit(root, "HEAD")),
+        )
         return
     if ref is None:
         typer.echo("error: give a git ref to test, or --work")
@@ -575,13 +579,28 @@ def play(
     )
 
 
+def selfplay_line(store: Store, champion) -> None:
+    """The self-play progress line; left out when there is no champion or the store fails."""
+    if champion is None:
+        return
+    net = champion.net or "none"
+    try:
+        shards = len(selfplay.shards_for(store, net))
+        lost = sum(path.endswith(".fens") for path in store.list("data", "experience/"))
+    except StoreUnavailable:
+        return
+    typer.echo(f"self-play: {shards} of {PER_NET} shards for network {net}, lost games: {lost}")
+
+
 def store_lines(root: Path) -> None:
     """Status lines that come from the store and from this machine's sync state."""
     from vektr_ops.sync import current_id
 
+    store = None
     note = root / "state" / "sync-error"
     try:
-        m = manifest.load(open_store(load_env(root)))
+        store = open_store(load_env(root))
+        m = manifest.load(store)
     except StoreUnavailable as error:
         configured = "HF_TOKEN or VEKTR_STORE" not in str(error)
         typer.echo("store: unreachable" if configured else "store: not configured")
@@ -603,6 +622,7 @@ def store_lines(root: Path) -> None:
         open_tests = len(m.candidates())
         if open_tests:
             typer.echo(f"open tests: {open_tests}")
+        selfplay_line(store, champion)
     if note.is_file():
         typer.echo(f"sync error: {note.read_text().strip()}")
 

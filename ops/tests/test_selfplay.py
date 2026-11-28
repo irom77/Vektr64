@@ -166,3 +166,64 @@ def test_an_upload_failure_keeps_the_shard_for_flush(tmp_path):
     assert selfplay.flush(good, tmp_path) == 1
     assert len(good.list("data", selfplay.PREFIX)) == 1
     assert list(folder.iterdir()) == []
+
+
+def fill(store, net, n):
+    for i in range(n):
+        store.write_bytes("data", f"selfplay/20261128T{i:06d}Z-{net}-box-0000.vkd.gz", b"x")
+
+
+def calls_of(store, tmp_path, env=None, jobs=2):
+    seen = []
+
+    def fake_generate(store, root, *, commit, threads):
+        seen.append(threads)
+        return "selfplay/x"
+
+    done = selfplay.step(store, tmp_path, {} if env is None else env, commit="a" * 40, generate=fake_generate)
+    return done, seen
+
+
+@pytest.fixture
+def machine(monkeypatch):
+    monkeypatch.setattr(selfplay, "machine", lambda: (4, 4000))
+    monkeypatch.setattr(selfplay, "bot_here", lambda: True)
+    monkeypatch.setattr(selfplay, "concurrency", lambda cores, mb, bot: 2)
+
+
+def test_step_generates_one_shard(tmp_path, machine):
+    done, seen = calls_of(champion_store(tmp_path), tmp_path)
+    assert done is True and seen == [2]
+
+
+def test_step_stops_at_the_target(tmp_path, machine):
+    store = champion_store(tmp_path)
+    fill(store, NET, selfplay.PER_NET)
+    done, seen = calls_of(store, tmp_path)
+    assert done is False and seen == []
+
+
+def test_shards_of_an_older_network_do_not_count(tmp_path, machine):
+    store = champion_store(tmp_path)
+    fill(store, "0123456789abcdef", selfplay.PER_NET)
+    done, seen = calls_of(store, tmp_path)
+    assert done is True and seen == [2]
+
+
+def test_the_switch_turns_it_off(tmp_path, machine):
+    done, seen = calls_of(champion_store(tmp_path), tmp_path, env={"VEKTR_DATAGEN": "0"})
+    assert done is False and seen == []
+
+
+def test_step_does_nothing_where_play_would_suffer(tmp_path, machine, monkeypatch):
+    monkeypatch.setattr(selfplay, "concurrency", lambda cores, mb, bot: 0)
+    done, seen = calls_of(champion_store(tmp_path), tmp_path)
+    assert done is False and seen == []
+
+
+def test_a_stray_file_in_the_store_is_skipped(tmp_path):
+    store = champion_store(tmp_path)
+    fill(store, NET, 1)
+    store.write_bytes("data", "selfplay/stray.vkd.gz", b"x")
+    store.write_bytes("data", "selfplay/README.md", b"x")
+    assert len(selfplay.shards_for(store, NET)) == 1

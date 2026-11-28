@@ -278,3 +278,28 @@ def test_a_nonsensical_ratio_is_not_recorded_or_used(tmp_path):
     s, m = store_with_champion_and_candidate(tmp_path)
     put_ratios(s, [0, float("nan"), True, 0.001, -1.0])
     assert gate.speed_ratio(s, gate.test_id(A[:12], B[:12])) is None
+
+
+def test_worker_generates_only_when_idle(tmp_path, monkeypatch):
+    s, _ = store_with_champion_and_candidate(tmp_path)
+    monkeypatch.setattr("vektr_ops.anchors.anchor_step", lambda store, root, v: None)
+    monkeypatch.setattr(gate, "run_batch", lambda *a, **k: (result((5, 20, 50, 20, 5)), "pgn"))
+    calls = []
+    work(s, tmp_path, once=True, idle_s=0, datagen=lambda: calls.append(1))
+    assert calls == []  # the open test's step did work
+
+    s2, _ = store_with_champion_only(tmp_path / "idle")
+    monkeypatch.setattr("vektr_ops.anchors.anchor_step", lambda store, root, v: None)
+    work(s2, tmp_path, once=True, idle_s=0, datagen=lambda: calls.append(1))
+    assert calls == [1]
+
+
+def test_a_datagen_fault_does_not_stop_the_worker(tmp_path, monkeypatch, capsys):
+    s, _ = store_with_champion_only(tmp_path)
+    monkeypatch.setattr("vektr_ops.anchors.anchor_step", lambda store, root, v: None)
+
+    def broken():
+        raise RuntimeError("engine exploded")
+
+    work(s, tmp_path, once=True, idle_s=0, datagen=broken)
+    assert "RuntimeError: engine exploded" in capsys.readouterr().err

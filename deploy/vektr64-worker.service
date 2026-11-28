@@ -1,5 +1,5 @@
 [Unit]
-Description=Vektr64 background worker: gate and anchor matches
+Description=Vektr64 background worker: gate and anchor matches, self-play data when idle
 After=network-online.target
 Wants=network-online.target
 

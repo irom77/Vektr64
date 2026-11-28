@@ -258,8 +258,12 @@ def attempt(what: str, job) -> bool:
         return False
 
 
-def work(store: Store, root: Path, *, once: bool = False, idle_s: int = 300) -> None:
-    """Worker loop: advance every open test by a batch, then any anchor work that is due."""
+def work(store: Store, root: Path, *, once: bool = False, idle_s: int = 300, datagen=None) -> None:
+    """Worker loop: advance every open test by a batch, then any anchor work that is due.
+
+    With no test and no anchor work done in a pass, `datagen()` may add one self-play shard; a fault in it is
+    reported and counts as idle.
+    """
     from vektr_ops.anchors import anchor_step
 
     while True:
@@ -270,6 +274,11 @@ def work(store: Store, root: Path, *, once: bool = False, idle_s: int = 300) -> 
             champion = load(store).champion_version()
             if champion is not None:
                 busy |= attempt(champion.id, lambda: anchor_step(store, root, champion) is not None)
+            if not busy and datagen is not None:
+                try:
+                    busy = bool(datagen())
+                except Exception as error:  # self-play never stops the worker or counts as work
+                    print(f"datagen: {type(error).__name__}: {str(error)[-500:]}", file=sys.stderr, flush=True)
         except StoreUnavailable:
             if once:
                 raise

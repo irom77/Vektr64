@@ -132,6 +132,20 @@ def test_status_shows_champion_gate_and_sync_error(monkeypatch, tmp_path):
     assert "last gate: bbbbbbbbbbbb reject" in out and "sync error: SyncRefused: boom" in out
 
 
+def test_status_shows_selfplay_progress(monkeypatch, tmp_path):
+    from helpers import store_with_champion_only
+
+    offline(monkeypatch)
+    s, _ = store_with_champion_only(tmp_path)
+    for i in range(2):
+        s.write_bytes("data", f"selfplay/20261128T00000{i}Z-none-box-0000.vkd.gz", b"x")
+    s.write_bytes("data", "experience/game.fens", b"fen\n")
+    monkeypatch.setenv("VEKTR_STORE", str(tmp_path / "store"))
+    monkeypatch.setattr("vektr_ops.cli.repo_root", lambda: tmp_path)
+    out = CliRunner().invoke(app, ["status"]).output
+    assert "self-play: 2 of 120 shards for network none, lost games: 1" in out
+
+
 def test_page_command_writes_the_file(monkeypatch, tmp_path):
     offline(monkeypatch)
     monkeypatch.setenv("VEKTR_STORE", str(tmp_path / "store"))
