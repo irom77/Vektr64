@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+import time
 import urllib.request
 from pathlib import Path
 
@@ -12,7 +13,7 @@ import yaml
 
 from vektr_ops import builds
 from vektr_ops import gate as gate_mod
-from vektr_ops import manifest
+from vektr_ops import manifest, selfplay
 from vektr_ops.botconfig import load_env, render
 from vektr_ops.sizing import hash_mb
 from vektr_ops.store import Store, StoreUnavailable, open_store
@@ -135,6 +136,33 @@ def gate(
         if max_batches and played >= max_batches:
             typer.echo("stopped: batch limit reached, test still open")
             return
+
+
+@app.command()
+def datagen(
+    shards: int = typer.Option(1, "--shards", help="How many shards to generate and upload."),
+    threads: int = typer.Option(None, "--threads", help="Engine threads; default fits this machine."),
+) -> None:
+    """Play self-play games with the champion's network and upload them as training data."""
+    from vektr_ops.match import bot_here, concurrency
+
+    root = repo_root()
+    store = the_store(root)
+    if threads is None:
+        threads = concurrency(*gate_mod.machine(), bot_here())
+    if threads < 1:
+        typer.echo("error: this machine must not play right now")
+        raise typer.Exit(1)
+    commit = resolve_commit(root, "HEAD")
+    for _ in range(shards):
+        started = time.monotonic()
+        try:
+            path = selfplay.generate(store, root, commit=commit, threads=threads)
+        except (selfplay.DatagenFailed, StoreUnavailable) as error:
+            typer.echo(f"error: {error}")
+            raise typer.Exit(1)
+        rate = selfplay.SHARD_POSITIONS / (time.monotonic() - started)
+        typer.echo(f"{path}  {rate:,.0f} positions/s")
 
 
 @app.command()

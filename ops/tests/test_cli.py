@@ -314,3 +314,11 @@ def test_the_page_is_refreshed_even_when_the_game_upload_fails_badly(monkeypatch
     monkeypatch.setattr(sync_mod, "upload_games", boom)
     r = CliRunner().invoke(app, ["sync"])
     assert r.exit_code != 0 and refreshed == [tmp_path]
+
+
+def test_datagen_refuses_when_this_machine_must_not_play(monkeypatch, tmp_path):
+    monkeypatch.setenv("VEKTR_STORE", str(tmp_path))
+    monkeypatch.setattr("vektr_ops.match.bot_here", lambda: True)
+    monkeypatch.setattr("vektr_ops.cli.gate_mod.machine", lambda: (2, 4000))
+    r = CliRunner().invoke(app, ["datagen"])
+    assert r.exit_code == 1 and "must not play" in r.output
