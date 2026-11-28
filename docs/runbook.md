@@ -35,13 +35,20 @@ laptop, and some credit in the RunPod account.
 1. **Prepare data** (once; about 4 GB streamed from Lichess): `vektr-ops prep --positions 30000000`
    uploads the shards to the private data repo.
 2. **Push the commit** you are on: the pod clones it from GitHub.
-3. **Start a burst:** `vektr-ops burst --minutes 45 --run first-<date>`. It uses RunPod's secure
+3. **Smoke burst first.** Before the first real run, spend a minute to prove the whole path:
+   `vektr-ops burst --minutes 1 --run smoke-<date>`. Check afterwards that `vektr-ops burst --list`
+   shows no pods and the run has a network in the store. Only then start the real one.
+   **Start a burst:** `vektr-ops burst --minutes 45 --run first-<date>`. It uses RunPod's secure
    cloud; `--cloud community` is cheaper but runs on third-party hosts. It tries four GPU types
    in turn, rejects any pod quoted above `--max-rate` (default $0.60 an hour), then prints the GPU,
    the cloud, the hourly rate and `worst case $...` (the rate over the pod's hard limit: 20 minutes
    of setup plus the training time, 65 minutes for `--minutes 45`) and asks to continue; `--yes`
    skips the question and answering no deletes the pod. The launcher then waits until the pod is
    gone and checks that the network is in the store.
+   The "worst case" figure excludes the time RunPod spends pulling the image and the shutdown
+   grace, so the real bill can be a little higher. **The launcher is the only guard until the
+   container starts** (the in-pod watchdog does not exist yet): keep it running and never close
+   the terminal until it reports the pod gone.
    The pod receives `HF_BURST_TOKEN` as its `HF_TOKEN` when that is set, otherwise your full
    `HF_TOKEN` (the launcher says so). Prefer a fine-grained Hugging Face token limited to the two
    `vektr64-*` repos, put in `.env` as `HF_BURST_TOKEN`.
@@ -50,13 +57,18 @@ laptop, and some credit in the RunPod account.
    and on Ctrl-C or any error. Afterwards `vektr-ops burst --list` should show no pods. If it
    shows one, `vektr-ops burst --kill` deletes every pod this tool started (by the `vektr64-`
    name prefix; other pods are untouched). Also check the RunPod console after the first burst.
+   The launcher's last line says how the pod ended: `pod gone` means the pod deleted itself
+   (the normal end); `pod deleted: ...` means the launcher deleted it (it stopped, overstayed,
+   or was interrupted), and the reason follows.
 5. **Install the network:** `vektr-ops install-net first-<date>` writes it into `engine/nets/`,
    builds the engine and runs the network check; on failure the old network stays.
 6. **Commit it on a branch** (for example `net-first`) with the two network files and a
    `docs/bench.md` row, push, and run the gate as in the next section.
 7. **A burst that dies half-way** (pod lost, launcher interrupted, no network in the store):
    start it again with the same `--run`; the checkpoint in the store is picked up and training
-   resumes.
+   resumes. When a run fails inside the pod, it uploads the tail of its output to
+   `nets:runs/<run>/burst.log` (secrets redacted); the launcher prints it before the "start again"
+   message when no network was stored.
 
 `vektr-ops burst --local --minutes M --run ID` runs the same script on this machine against the
 configured store, with no RunPod call: use it to try the whole path on a small dataset.
@@ -85,6 +97,9 @@ uv run --project ops vektr-ops gate my-branch  # on the laptop; plays until deci
 
 Bridge or ops changes (anything outside `engine/`) do not need the gate:
 `git pull && git submodule update --init && sudo systemctl restart vektr64`.
+Before the `git pull` on the play machine, confirm `vektr-ops status` shows a pinned champion
+(`playing: be104b19b30e` style). If `builds/current` is missing the bot would play the
+working-tree engine instead of the champion.
 
 ## The status page
 
