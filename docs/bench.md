@@ -8,6 +8,7 @@ and changes only when search or evaluation changes. Speed (nps) depends on the m
 |---|---|---|---|---|
 | 0.1.0 (stage 1) | alpha-beta, quiescence, table, ordering, hand-written eval | 38,791,222 | 4.4–5.5M | 2.85M |
 | 0.2.0 (stage 3) | NNUE evaluation, bootstrap network f4e77e4c4ed3f87f, not gated | 34,234,013 | 3.4–3.7M | not measured |
+| 0.2.0 (stage 3) | first trained network 4a10db9d9f3f084c (run first-20261128: 45 minutes, 30M positions, validation loss 0.00932) | 27,251,534 | 4.6–4.7M | not measured |
 
 ## Anchor ratings
 
