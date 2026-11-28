@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 
 from vektr_ops.builds import bench_nps, ensure_build, netcheck as engine_netcheck
-from vektr_ops.manifest import load, update
+from vektr_ops.manifest import load, update, usable_ratio
 from vektr_ops.store import Store
 
 SPEED_MARGIN = 0.10
@@ -72,8 +72,8 @@ def follow(store: Store, root: Path, build, bench, starts, record_speed: bool, n
         old_speed = bench(old_binary)
         gate = champion.gate or {}
         # A network build is expected to be slower by the ratio the gate measured against this very build.
-        ratio = gate.get("speed_ratio") if gate.get("champion") == playing else None
-        expected = old_speed * (ratio if isinstance(ratio, (int, float)) else 1.0)
+        ratio = usable_ratio(gate.get("speed_ratio")) if gate.get("champion") == playing else None
+        expected = old_speed * (ratio or 1.0)
         if speed < (1 - SPEED_MARGIN) * expected:
             raise SyncRefused(
                 f"{champion.id} is slower than {playing}: {speed} against {old_speed} nodes per second"

@@ -100,6 +100,13 @@ def add_candidate(m: Manifest, engine_commit: str, now: str, net: str | None = N
         return version
 
 
+def usable_ratio(value) -> float | None:
+    """A recorded speed ratio as a number, or None unless it is a real one in 0.1 to 1.0."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if 0.1 <= value <= 1.0 else None  # False for NaN too
+
+
 def promote(m: Manifest, id: str, *, bootstrap: bool = False) -> None:
     """Make a version the champion. Needs an accepted gate, or `bootstrap` with no champion."""
     version = m.get(id)

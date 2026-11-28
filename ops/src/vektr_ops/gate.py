@@ -3,6 +3,7 @@
 import secrets
 import socket
 import statistics
+import subprocess
 import sys
 import time
 import zlib
@@ -13,7 +14,7 @@ import psutil
 
 from vektr_ops import tools
 from vektr_ops.builds import bench_nps, ensure_build
-from vektr_ops.manifest import Version, load, promote, reject, update
+from vektr_ops.manifest import Version, load, promote, reject, update, usable_ratio
 from vektr_ops.match import (
     PAIRS_PER_BATCH,
     Engine,
@@ -104,7 +105,7 @@ def speed_ratio(store: Store, test: str) -> float | None:
     ratios = [
         r["meta"]["speed_ratio"]
         for r in batches(store, f"gate/{test}")
-        if isinstance(r.get("meta", {}).get("speed_ratio"), (int, float))
+        if usable_ratio(r.get("meta", {}).get("speed_ratio")) is not None
     ]
     return round(statistics.median(ratios), 3) if ratios else None
 
@@ -215,7 +216,10 @@ def step(store: Store, root: Path, candidate: Version, runner=None) -> dict:
     champion_bin = ensure_build(root, champion.engine_commit)
     candidate_bin = ensure_build(root, version.engine_commit)
     here_nps = bench_nps(champion_bin)
-    ratio = round(bench_nps(candidate_bin) / here_nps, 3)
+    try:
+        ratio = usable_ratio(round(bench_nps(candidate_bin) / here_nps, 3))
+    except (ValueError, ArithmeticError, OSError, subprocess.SubprocessError):
+        ratio = None  # the batch is still worth playing; it just carries no ratio
     name = new_batch_name()
     a = Engine("candidate", candidate_bin, dict(ENGINE_OPTIONS))
     b = Engine("champion", champion_bin, dict(ENGINE_OPTIONS))

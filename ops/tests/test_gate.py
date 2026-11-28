@@ -258,3 +258,23 @@ def test_a_test_with_no_recorded_ratio_settles_without_one(tmp_path):
     assert gate.speed_ratio(s, gate.test_id(A[:12], B[:12])) is None
     gate.settled(s, B[:12], A[:12], verdict((100, 400, 1000, 480, 120), 4000))
     assert "speed_ratio" not in load(s).get(B[:12]).gate
+
+
+def test_a_failed_candidate_bench_still_plays_the_batch_without_a_ratio(tmp_path, monkeypatch):
+    s, m = store_with_champion_and_candidate(tmp_path)
+
+    def bench(binary):
+        if binary.name == B[:12]:
+            raise ValueError("not a bench line: ''")
+        return 2_000_000
+
+    monkeypatch.setattr(gate, "bench_nps", bench)
+    step(s, tmp_path, m.get(B[:12]), runner=ratio_runner)
+    (record,) = gate.batches(s, f"gate/{gate.test_id(A[:12], B[:12])}")
+    assert "speed_ratio" not in record["meta"]
+
+
+def test_a_nonsensical_ratio_is_not_recorded_or_used(tmp_path):
+    s, m = store_with_champion_and_candidate(tmp_path)
+    put_ratios(s, [0, float("nan"), True, 0.001, -1.0])
+    assert gate.speed_ratio(s, gate.test_id(A[:12], B[:12])) is None

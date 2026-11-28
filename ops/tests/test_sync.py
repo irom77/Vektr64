@@ -228,3 +228,10 @@ def test_rollback_to_a_champion_without_a_network_needs_no_netcheck(tmp_path):
         raise AssertionError("no netcheck for a build without a network")
 
     assert run(s, tmp_path, netcheck=boom) == f"switched to {A[:12]}"
+
+
+@pytest.mark.parametrize("ratio", [0, -0.5, float("nan"), 0.001, True, "0.7"])
+def test_a_nonsensical_ratio_leaves_the_plain_speed_rule(tmp_path, ratio):
+    s = slower_network_setup(tmp_path, ratio)
+    with pytest.raises(SyncRefused, match="slower"):
+        run_speeds(s, tmp_path, 1_500_000)
