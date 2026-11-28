@@ -7,6 +7,8 @@ Plans: `docs/superpowers/plans/`.
 - `engine/` – the engine (Rust). Test with `(cd engine && cargo test --release)`.
 - `ops/` – gate, anchors, sync, page (Python, uv). Test with `uv run --project ops pytest ops/tests`.
 - `deploy/` – scripts and units for the play machine.
+- `docs/runbook.md` – how to operate the bot. `docs/box.md` – gotchas about the play machine:
+  read it before touching the box, and add to it when something there costs time.
 
 ## Executing plans
 

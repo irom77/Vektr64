@@ -2,6 +2,7 @@
 
 The bot runs on `irom-sei` (Ubuntu 24.04, 4 cores / 8 threads, reached over Tailscale at
 `100.114.82.19`, user `irom`) from `/home/irom/Vektr64`, as the systemd service `vektr64`.
+Things about this machine that are easy to trip over are in `docs/box.md`.
 
 ## What was set up (2026-11-27)
 
