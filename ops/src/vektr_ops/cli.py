@@ -467,7 +467,7 @@ def install_net(run: str = typer.Argument(..., help="Run id whose network become
 @app.command()
 def sync() -> None:
     """On the play machine: follow the manifest's champion and send game records to the store."""
-    from vektr_ops import sync as sync_mod
+    from vektr_ops import experience, sync as sync_mod
     from vektr_ops.match import bot_here
 
     root = repo_root()
@@ -482,6 +482,10 @@ def sync() -> None:
         typer.echo(f"game records uploaded: {sync_mod.upload_games(store, root)}")
     except StoreUnavailable as error:
         typer.echo(f"game records not uploaded: {error}")
+    try:
+        typer.echo(f"lost games added: {experience.upload_experience(store, root)}")
+    except StoreUnavailable as error:
+        typer.echo(f"lost games not added: {error}")
     finally:
         refresh_page(root)
 

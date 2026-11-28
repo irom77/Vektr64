@@ -247,3 +247,38 @@ def test_gate_registers_the_network_hash(monkeypatch, tmp_path):
     r = CliRunner().invoke(app, ["gate", "HEAD", "--max-batches", "1"])
     assert r.exit_code == 0, r.output
     assert load(LocalStore(tmp_path / "store")).get("b" * 12).net == "0123456789abcdef"
+
+
+def test_sync_reports_lost_games(monkeypatch, tmp_path):
+    import os
+
+    from test_experience import LOSS
+    from vektr_ops import sync as sync_mod
+
+    offline(monkeypatch)
+    monkeypatch.setenv("VEKTR_STORE", str(tmp_path / "store"))
+    monkeypatch.setattr("vektr_ops.cli.repo_root", lambda: tmp_path)
+    monkeypatch.setattr(sync_mod, "sync", lambda *a, **k: "unchanged")
+    records = tmp_path / "bot" / "game_records"
+    records.mkdir(parents=True)
+    game = records / "x vs Vektr64 - abc.pgn"
+    game.write_text(LOSS)
+    os.utime(game, (1, 1))
+    r = CliRunner().invoke(app, ["sync"])
+    assert r.exit_code == 0 and "lost games added: 1" in r.output
+
+
+def test_an_unavailable_store_for_lost_games_does_not_fail_the_sync(monkeypatch, tmp_path):
+    from vektr_ops import experience, sync as sync_mod
+    from vektr_ops.store import StoreUnavailable
+
+    def down(*a, **k):
+        raise StoreUnavailable("hub down")
+
+    offline(monkeypatch)
+    monkeypatch.setenv("VEKTR_STORE", str(tmp_path / "store"))
+    monkeypatch.setattr("vektr_ops.cli.repo_root", lambda: tmp_path)
+    monkeypatch.setattr(sync_mod, "sync", lambda *a, **k: "unchanged")
+    monkeypatch.setattr(experience, "upload_experience", down)
+    r = CliRunner().invoke(app, ["sync"])
+    assert r.exit_code == 0 and "lost games not added: hub down" in r.output

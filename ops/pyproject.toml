@@ -3,7 +3,13 @@ name = "vektr-ops"
 version = "0.1.0"
 description = "Operations CLI for the Vektr64 Lichess bot"
 requires-python = ">=3.12"
-dependencies = ["typer>=0.12", "psutil>=5.9", "pyyaml>=6.0", "huggingface_hub>=0.26"]
+dependencies = [
+    "typer>=0.12",
+    "psutil>=5.9",
+    "pyyaml>=6.0",
+    "huggingface_hub>=0.26",
+    "chess>=1.11",
+]
 
 [project.scripts]
 vektr-ops = "vektr_ops.cli:app"
@@ -22,3 +28,4 @@ packages = ["src/vektr_ops"]
 testpaths = ["tests"]
 markers = ["slow"]
 addopts = "-m 'not slow'"
+filterwarnings = ["ignore:'asyncio.DefaultEventLoopPolicy' is deprecated:DeprecationWarning:chess.engine"]
