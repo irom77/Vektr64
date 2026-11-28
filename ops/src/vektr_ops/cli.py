@@ -260,6 +260,109 @@ def train(
     typer.echo(f"net: {record['net']} val_loss={record.get('val_loss')} stored as runs/{run}/")
 
 
+def runpod_api():
+    """The RunPod client module; tests replace this with a fake."""
+    from vektr_ops import runpod
+
+    return runpod
+
+
+@app.command()
+def burst(
+    minutes: float = typer.Option(None, "--minutes", help="Training time budget in minutes."),
+    run: str = typer.Option(None, "--run", help="Run id; an existing run resumes from its checkpoint."),
+    max_rate: float = typer.Option(None, "--max-rate", help="Highest acceptable price, USD per hour."),
+    yes: bool = typer.Option(False, "--yes", help="Do not ask before the pod starts working."),
+    list_pods: bool = typer.Option(False, "--list", help="List the pods this tool started."),
+    kill: bool = typer.Option(False, "--kill", help="Delete every pod this tool started."),
+    local: bool = typer.Option(False, "--local", help="Run the burst script on this machine; no RunPod."),
+) -> None:
+    """Rent a GPU pod that trains a network, uploads it and always deletes itself."""
+    from vektr_ops import burst as burst_mod
+
+    root = repo_root()
+    env = load_env(root)
+    if local:
+        if minutes is None:
+            typer.echo("error: give --minutes")
+            raise typer.Exit(2)
+        run = run or "local-" + utc_now().replace(":", "").replace("-", "")
+        done = subprocess.run(
+            ["bash", str(root / "deploy" / "burst.sh")],
+            cwd=root,
+            env={**env, "VEKTR_LOCAL": "1", "VEKTR_RUN": run, "VEKTR_MINUTES": str(minutes)},
+        )
+        raise typer.Exit(done.returncode)
+
+    key = env.get("RUNPOD_API_KEY", "")
+    if not key:
+        typer.echo(
+            "error: RUNPOD_API_KEY is not set. Create a key at https://www.runpod.io/console/user/settings "
+            "(API Keys, pods read and write) and put it in .env"
+        )
+        raise typer.Exit(2)
+    api = runpod_api()
+    if list_pods or kill:
+        pods = [p for p in api.list_pods(key) if str(p.get("name", "")).startswith(burst_mod.NAME_PREFIX)]
+        if list_pods:
+            for p in pods:
+                typer.echo(f"{p['id']}  {p.get('name')}  {p.get('status')}  ${p.get('cost')}/h")
+            if not pods:
+                typer.echo("no pods")
+        else:
+            killed = burst_mod.kill_all(key, api=api)
+            typer.echo(f"deleted: {', '.join(killed)}" if killed else "no pods")
+        return
+
+    if minutes is None:
+        typer.echo("error: give --minutes (or --list, --kill, --local)")
+        raise typer.Exit(2)
+    token = env.get("HF_TOKEN", "")
+    if not token:
+        typer.echo("error: HF_TOKEN is not set; the pod needs it to read the data and store the network")
+        raise typer.Exit(2)
+    commit = resolve_commit(root, "HEAD")
+    if not is_pushed(root, commit):
+        typer.echo(f"error: {commit[:12]} is not on origin; push it first so the pod can fetch it")
+        raise typer.Exit(2)
+    run = run or "burst-" + utc_now().replace(":", "").replace("-", "")
+    rate_cap = burst_mod.MAX_RATE if max_rate is None else max_rate
+    hard_s = burst_mod.hard_limit(minutes)
+    bodies = [burst_mod.pod_body(run, commit, minutes, token, gpu) for gpu in burst_mod.GPUS]
+    try:
+        pod = burst_mod.launch(key, bodies, max_rate=rate_cap, api=api)
+    except burst_mod.BurstFailed as error:
+        typer.echo(f"error: {error}")
+        raise typer.Exit(1)
+
+    pod_id = pod["id"]
+    gone = False
+    try:
+        rate = float(pod["cost"])
+        typer.echo(f"pod {pod_id}: {pod.get('gpu', {}).get('id') or bodies[0]['gpu']['id']}, ${rate:.2f}/h")
+        typer.echo(f"worst case ${rate * hard_s / 3600:.2f} (the pod removes itself after {hard_s // 60} minutes)")
+        if not yes and not typer.confirm("continue?", default=False):
+            typer.echo("cancelled; deleting the pod")
+            raise typer.Exit(1)
+        outcome = burst_mod.watch(key, pod_id, hard_s, api=api)
+        gone = outcome == "gone" or outcome.startswith("deleted")
+        typer.echo(f"pod {outcome}")
+    finally:
+        if not gone:
+            try:
+                api.delete_pod(key, pod_id)
+            except Exception as error:
+                typer.echo(f"WARNING: could not delete pod {pod_id} ({error}); run `vektr-ops burst --kill`", err=True)
+    try:
+        finished = the_store(root).read_bytes("nets", f"runs/{run}/net.vknn") is not None
+    except typer.Exit:
+        finished = False
+    if not finished:
+        typer.echo(f"error: the pod is gone but run {run} has no network in the store; start again with --run {run}")
+        raise typer.Exit(1)
+    typer.echo(f"network ready: vektr-ops install-net {run}")
+
+
 def engine_check(root: Path) -> list[str]:
     """Build the engine and run its network check; returns the failure lines, empty when it passes."""
     try:

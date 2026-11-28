@@ -27,6 +27,35 @@ journalctl -u vektr64 --since "1 hour ago" | grep -iE "error|exception|illegal"
 ls bot/game_records/                       # one PGN per finished game
 ```
 
+## Training a network
+
+Training uses rented GPU pods ("bursts"). Needs `HF_TOKEN` and `RUNPOD_API_KEY` in `.env` on the
+laptop, and some credit in the RunPod account.
+
+1. **Prepare data** (once; about 4 GB streamed from Lichess): `vektr-ops prep --positions 30000000`
+   uploads the shards to the private data repo.
+2. **Push the commit** you are on: the pod clones it from GitHub.
+3. **Start a burst:** `vektr-ops burst --minutes 45 --run first-<date>`. It tries four GPU types
+   in turn on the community cloud, rejects any pod quoted above `--max-rate` (default $0.60 an
+   hour), then prints the GPU, the hourly rate and `worst case $...` (the rate over the pod's
+   hard time limit) and asks to continue; `--yes` skips the question and answering no deletes
+   the pod. The launcher then waits until the pod is gone and checks that the network is in the store.
+4. **Cleanup is layered.** Inside the pod a watchdog deletes it after the hard limit and an exit
+   trap deletes it however the script ends; the launcher deletes it if it stops or overstays,
+   and on Ctrl-C or any error. Afterwards `vektr-ops burst --list` should show no pods. If it
+   shows one, `vektr-ops burst --kill` deletes every pod this tool started (by the `vektr64-`
+   name prefix; other pods are untouched). Also check the RunPod console after the first burst.
+5. **Install the network:** `vektr-ops install-net first-<date>` writes it into `engine/nets/`,
+   builds the engine and runs the network check; on failure the old network stays.
+6. **Commit it on a branch** (for example `net-first`) with the two network files and a
+   `docs/bench.md` row, push, and run the gate as in the next section.
+7. **A burst that dies half-way** (pod lost, launcher interrupted, no network in the store):
+   start it again with the same `--run`; the checkpoint in the store is picked up and training
+   resumes.
+
+`vektr-ops burst --local --minutes M --run ID` runs the same script on this machine against the
+configured store, with no RunPod call: use it to try the whole path on a small dataset.
+
 ## Changing the engine: every change goes through the gate
 
 The engine that plays is the **champion** named in the manifest in the external store, not
