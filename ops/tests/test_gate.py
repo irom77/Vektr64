@@ -58,8 +58,12 @@ def test_verdict_accepts_rejects_and_continues():
 
 
 def test_game_cap_rejects():
-    v = verdict((5, 20, 50, 20, 5), 20_000)
+    v = verdict((5, 20, 50, 20, 5), 40_000)
     assert v["decision"] == "reject" and v["reason"] == "cap"
+
+
+def test_undecided_test_continues_below_the_cap():
+    assert verdict((5, 20, 50, 20, 5), 39_900)["decision"] == "continue"
 
 
 def test_step_promotes_on_accept(tmp_path):

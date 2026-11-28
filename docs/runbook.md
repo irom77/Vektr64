@@ -39,7 +39,7 @@ uv run --project ops vektr-ops gate my-branch  # on the laptop; plays until deci
 
 - The candidate plays the champion in batches of 100 games. Each batch prints
   `games=… llr=… elo=… ±…`. The test ends at `accept` (better by about 5 Elo) or `reject`
-  (not better, or 20,000 games without a decision).
+  (not better, or 40,000 games without a decision).
 - The box's worker joins the same test on its own; results from every machine are pooled.
   You can stop the laptop at any time and the test carries on, or resumes when you rerun it.
 - On `accept` the candidate becomes the champion. Within ten minutes the box builds it,
