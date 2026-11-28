@@ -140,7 +140,9 @@ impl Searcher {
 
     /// Static evaluation of the position at `ply`, from the side to move's view.
     fn eval(&self, ply: usize, board: &Board) -> i32 {
-        self.net.evaluate(&self.accs[ply], board.side_to_move())
+        let score = self.net.evaluate(&self.accs[ply], board.side_to_move());
+        debug_assert_eq!(score, self.net.evaluate_board(board), "incremental accumulator diverged at ply {ply}");
+        score
     }
 
     /// Derives the accumulator at `ply + 1` from the one at `ply`.
