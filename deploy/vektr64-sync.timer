@@ -1,0 +1,9 @@
+[Unit]
+Description=Vektr64: sync with the store every ten minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target

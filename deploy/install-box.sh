@@ -26,7 +26,9 @@ uv pip install --python bot/lichess-bot/.venv/bin/python -r bot/lichess-bot/requ
 (cd engine && cargo build --release && cargo test --release)
 
 if [ "${1:-}" != "--no-service" ]; then
-    sudo cp deploy/vektr64.service /etc/systemd/system/vektr64.service
+    sudo cp deploy/vektr64*.service deploy/vektr64*.timer /etc/systemd/system/
     sudo systemctl daemon-reload
-    echo "Service installed but not started. When .env holds the token: sudo systemctl enable --now vektr64"
+    echo "Units installed; none was started or enabled by this script."
+    echo "Bot:        sudo systemctl enable --now vektr64"
+    echo "Background: sudo systemctl enable --now vektr64-sync.timer vektr64-worker.service vektr64-page.service"
 fi

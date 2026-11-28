@@ -1,0 +1,14 @@
+[Unit]
+Description=Vektr64 status page (static files on port 8064)
+After=network-online.target
+
+[Service]
+User=irom
+ExecStartPre=/usr/bin/mkdir -p /home/irom/Vektr64/site
+ExecStart=/usr/bin/python3 -m http.server 8064 --directory /home/irom/Vektr64/site
+Restart=always
+RestartSec=10
+MemoryMax=100M
+
+[Install]
+WantedBy=multi-user.target

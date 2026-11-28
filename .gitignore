@@ -5,3 +5,7 @@ __pycache__/
 bot/config.yml
 bot/game_records/
 .superpowers/
+tools/
+builds/
+site/
+state/
