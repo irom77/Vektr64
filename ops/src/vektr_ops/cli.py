@@ -249,6 +249,21 @@ def train(
     typer.echo(f"net: {record['net']} val_loss={record.get('val_loss')} stored as runs/{run}/")
 
 
+def engine_check(root: Path) -> list[str]:
+    """Build the engine and run its network check; returns the failure lines, empty when it passes."""
+    try:
+        build_engine(root)
+    except typer.Exit:
+        return ["engine build failed"]
+    done = subprocess.run(
+        [str(root / "engine" / "target" / "release" / "vektr"), "netcheck"],
+        capture_output=True, text=True,
+    )
+    if done.returncode == 0:
+        return []
+    return (done.stdout + done.stderr).strip().splitlines() or [f"netcheck exited {done.returncode}"]
+
+
 @app.command("install-net")
 def install_net(run: str = typer.Argument(..., help="Run id whose network becomes the default.")) -> None:
     """Install a trained network into the engine, build it and check it against the reference."""
@@ -257,19 +272,14 @@ def install_net(run: str = typer.Argument(..., help="Run id whose network become
     root = repo_root()
     store = the_store(root)
     try:
-        net = training.install_net(store, root, run)
+        net = training.install_net(store, root, run, check=engine_check)
     except KeyError as error:
         typer.echo(f"error: {error.args[0]}")
         raise typer.Exit(2)
-    build_engine(root)
-    done = subprocess.run(
-        [str(root / "engine" / "target" / "release" / "vektr"), "netcheck"],
-        capture_output=True, text=True,
-    )
-    if done.returncode != 0:
-        typer.echo(done.stdout + done.stderr, err=True)
+    except training.NetCheckFailed as error:
+        typer.echo(f"error: network {run} failed the check; the engine's network is unchanged\n{error}", err=True)
         raise typer.Exit(1)
-    typer.echo(f"installed {net}: {done.stdout.strip()}")
+    typer.echo(f"installed {net}")
 
 
 @app.command()

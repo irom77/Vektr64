@@ -18,12 +18,20 @@ def trainer_cmd(env: dict, module: str, *args: str) -> list[str]:
 
 
 def pull_shards(store: Store, dest: Path, limit: int | None = None) -> list[str]:
-    """Fetch training shards (the first `limit`, by path) into `dest`; returns their store paths."""
+    """Fetch training shards (the first `limit`, by path) into `dest`; returns their store paths.
+
+    Local names are the store path with `/` as `__`, so they sort like the paths and never collide;
+    files in `dest` that are not selected are removed, because the trainer reads every shard there.
+    """
     names = sorted(n for n in store.list("data", "bootstrap/") if n.endswith(".npz"))
     names = names[:limit]
     dest.mkdir(parents=True, exist_ok=True)
+    wanted = {n.replace("/", "__") for n in names}
+    for old in dest.iterdir():
+        if old.name not in wanted:
+            old.unlink()
     for name in names:
-        target = dest / Path(name).name
+        target = dest / name.replace("/", "__")
         if target.exists():
             continue
         data = store.read_bytes("data", name)
@@ -97,14 +105,35 @@ def run_training(
     return record
 
 
-def install_net(store: Store, root: Path, run: str) -> str:
-    """Make a run's network the engine's default; returns the network hash."""
+class NetCheckFailed(Exception):
+    """The installed network did not pass the engine's check; the old network is back in place."""
+
+
+def install_net(store: Store, root: Path, run: str, check=None) -> str:
+    """Make a run's network the engine's default; returns the network hash.
+
+    `check(root)` runs with the new files in place (the engine compiles them in) and returns the
+    failure lines, empty when all is well. On failure the previous files are restored.
+    """
     net = store.read_bytes("nets", f"runs/{run}/net.vknn")
-    check = store.read_bytes("nets", f"runs/{run}/net.check")
-    if net is None or check is None:
+    netcheck = store.read_bytes("nets", f"runs/{run}/net.check")
+    if net is None or netcheck is None:
         raise KeyError(f"run {run!r} has no network in the store")
     target = root / "engine" / "nets"
     target.mkdir(parents=True, exist_ok=True)
-    (target / "default.vknn").write_bytes(net)
-    (target / "default.check").write_bytes(check)
+    files = {target / "default.vknn": net, target / "default.check": netcheck}
+    before = {p: p.read_bytes() if p.exists() else None for p in files}
+    for path, data in files.items():
+        path.write_bytes(data)
+    try:
+        problems = check(root) if check else []
+    except BaseException:
+        problems = None
+        raise
+    finally:
+        if problems is None or problems:
+            for path, data in before.items():
+                path.unlink(missing_ok=True) if data is None else path.write_bytes(data)
+    if problems:
+        raise NetCheckFailed("\n".join(problems))
     return hashlib.sha256(net).hexdigest()[:16]

@@ -166,3 +166,51 @@ def test_gate_on_a_withdrawn_version_says_so(monkeypatch, tmp_path):
     CliRunner().invoke(app, ["reject", B[:12]])
     r = CliRunner().invoke(app, ["gate", "some-ref"])
     assert r.exit_code == 0 and "already rejected (withdrawn)" in r.output
+
+
+def cli_setup(monkeypatch, tmp_path):
+    from vektr_ops.store import LocalStore
+
+    monkeypatch.setattr("vektr_ops.cli.repo_root", lambda: tmp_path)
+    monkeypatch.setenv("VEKTR_STORE", str(tmp_path / "store"))
+    nets = tmp_path / "engine" / "nets"
+    nets.mkdir(parents=True)
+    (nets / "default.vknn").write_bytes(b"old net")
+    (nets / "default.check").write_bytes(b"old check")
+    store = LocalStore(tmp_path / "store")
+    store.write_bytes("nets", "runs/r1/net.vknn", b"network")
+    store.write_bytes("nets", "runs/r1/net.check", b"check")
+    return nets
+
+
+def test_install_net_of_an_unknown_run_exits_2(monkeypatch, tmp_path):
+    cli_setup(monkeypatch, tmp_path)
+    r = CliRunner().invoke(app, ["install-net", "nope"])
+    assert r.exit_code == 2 and "no network" in r.output
+
+
+def test_install_net_with_a_failing_netcheck_exits_1_and_leaves_the_engine_alone(monkeypatch, tmp_path):
+    nets = cli_setup(monkeypatch, tmp_path)
+    monkeypatch.setattr("vektr_ops.cli.engine_check", lambda root: ["mismatch: score 12 != 13"])
+    r = CliRunner().invoke(app, ["install-net", "r1"])
+    assert r.exit_code == 1 and "mismatch: score 12 != 13" in r.output
+    assert (nets / "default.vknn").read_bytes() == b"old net"
+    assert (nets / "default.check").read_bytes() == b"old check"
+
+
+def test_install_net_installs_when_the_check_passes(monkeypatch, tmp_path):
+    nets = cli_setup(monkeypatch, tmp_path)
+    monkeypatch.setattr("vektr_ops.cli.engine_check", lambda root: [])
+    r = CliRunner().invoke(app, ["install-net", "r1"])
+    assert r.exit_code == 0 and (nets / "default.vknn").read_bytes() == b"network"
+
+
+def test_train_reports_a_failed_run_and_exits_1(monkeypatch, tmp_path):
+    cli_setup(monkeypatch, tmp_path)
+
+    def boom(*a, **k):
+        raise RuntimeError("trainer exited with status 1")
+
+    monkeypatch.setattr("vektr_ops.training.run_training", boom)
+    r = CliRunner().invoke(app, ["train", "--run", "r1", "--minutes", "1"])
+    assert r.exit_code == 1 and "trainer exited with status 1" in r.output
