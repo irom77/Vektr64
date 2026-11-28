@@ -17,7 +17,7 @@ and it is only good for comparing one version of Vektr64 with another.
 
 | Version | Engine | Anchor rating | Games | vs 1500 (W/D/L) | vs 1800 | vs 2100 | vs 2400 |
 |---|---|---|---|---|---|---|---|
-| be104b19b30e | 0.1.0 (stage 1) | 2153 ±37 | 900 | 283/1/16 | 143/6/51 | 120/15/65 | 58/18/124 |
+| be104b19b30e | 0.1.0 (stage 1) | 2167 ±33 | 1000 | 283/1/16 | 143/6/51 | 185/21/94 | 58/18/124 |
 
-The 1500 anchor got 300 games because the laptop and the box both started a batch for it
-at the same moment; extra games are counted, not thrown away.
+The 1500 and 2100 anchors got 300 games each because the laptop and the box both started a
+batch for them at the same moment; extra games are counted, not thrown away.
