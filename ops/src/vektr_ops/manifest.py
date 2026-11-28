@@ -89,13 +89,13 @@ def version_id(engine_commit: str, net: str | None = None) -> str:
     return engine_commit[:12]
 
 
-def add_candidate(m: Manifest, engine_commit: str, now: str) -> Version:
+def add_candidate(m: Manifest, engine_commit: str, now: str, net: str | None = None) -> Version:
     """Register a commit as a candidate; returns the existing version if already known."""
     id = version_id(engine_commit)
     try:
         return m.get(id)
     except KeyError:
-        version = Version(id=id, engine_commit=engine_commit, created=now)
+        version = Version(id=id, engine_commit=engine_commit, net=net, created=now)
         m.versions.append(version)
         return version
 

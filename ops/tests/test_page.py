@@ -89,3 +89,10 @@ def test_collect_survives_lichess_and_store_being_down(tmp_path):
 
     d = collect(None, tmp_path, fetch_json)
     assert d.history == [] and d.blitz_rating is None and d.versions == []
+
+
+def test_the_version_table_shows_the_network_hash():
+    vs = [Version("a" * 12, "a" * 40, "0123456789abcdef", None, "champion", "t0",
+                  {"decision": "accept", "games": 10}, {"elo": 1950.0, "margin": 30.0, "games": 800}, None)]
+    html = render(data(versions=vs, champion="a" * 12, playing_id="a" * 12))
+    assert html.count("0123456789abcdef") == 2

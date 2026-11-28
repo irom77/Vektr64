@@ -2,6 +2,7 @@
 
 import secrets
 import socket
+import statistics
 import sys
 import time
 import zlib
@@ -98,6 +99,16 @@ def pooled(store: Store, test: str) -> tuple[Penta, int]:
     return penta, games
 
 
+def speed_ratio(store: Store, test: str) -> float | None:
+    """Median candidate-to-champion search speed over a test's counted batches, if any recorded it."""
+    ratios = [
+        r["meta"]["speed_ratio"]
+        for r in batches(store, f"gate/{test}")
+        if isinstance(r.get("meta", {}).get("speed_ratio"), (int, float))
+    ]
+    return round(statistics.median(ratios), 3) if ratios else None
+
+
 def verdict(penta: Penta, games: int) -> dict:
     """Where a test stands: accept, reject or continue, with the numbers behind it."""
     value = llr(penta, ELO0, ELO1)
@@ -146,6 +157,9 @@ def settle(store: Store, candidate_id: str, champion_id: str, result: dict) -> b
 
 def settled(store: Store, candidate_id: str, champion_id: str, result: dict) -> dict:
     """Settle a decided test; if the champion moved on meanwhile, the test simply stays open."""
+    ratio = speed_ratio(store, test_id(champion_id, candidate_id))
+    if ratio is not None:
+        result = {**result, "speed_ratio": ratio}
     if settle(store, candidate_id, champion_id, result):
         return result
     version = load(store).get(candidate_id)
@@ -154,7 +168,10 @@ def settled(store: Store, candidate_id: str, champion_id: str, result: dict) -> 
     return {**result, "decision": "continue", "reason": "champion changed"}
 
 
-def play(root: Path, a: Engine, b: Engine, here_nps: int, box_nps: int, runner, name: str):
+def play(
+    root: Path, a: Engine, b: Engine, here_nps: int, box_nps: int, runner, name: str,
+    ratio: float | None = None,
+):
     """Run one batch sized for this machine; returns (result, pgn, meta) or None if busy."""
     cores, available_mb = machine()
     with_bot = bot_here()
@@ -164,6 +181,8 @@ def play(root: Path, a: Engine, b: Engine, here_nps: int, box_nps: int, runner, 
     tc = scaled_tc(box_nps, here_nps)
     seed = zlib.crc32(name.encode())
     meta = {"host": socket.gethostname(), "tc": tc, "jobs": jobs, "here_nps": here_nps, "seed": seed}
+    if ratio is not None:
+        meta["speed_ratio"] = ratio
     kwargs = dict(
         tc=tc,
         book=tools.ensure(tools.BOOK, root / "tools"),
@@ -196,11 +215,12 @@ def step(store: Store, root: Path, candidate: Version, runner=None) -> dict:
     champion_bin = ensure_build(root, champion.engine_commit)
     candidate_bin = ensure_build(root, version.engine_commit)
     here_nps = bench_nps(champion_bin)
+    ratio = round(bench_nps(candidate_bin) / here_nps, 3)
     name = new_batch_name()
     a = Engine("candidate", candidate_bin, dict(ENGINE_OPTIONS))
     b = Engine("champion", champion_bin, dict(ENGINE_OPTIONS))
     try:
-        played = play(root, a, b, here_nps, champion.box_nps or here_nps, runner or run_batch, name)
+        played = play(root, a, b, here_nps, champion.box_nps or here_nps, runner or run_batch, name, ratio)
     except Interrupted as stopped:
         if stopped.result.games:
             upload_batch(store, test, name, stopped.result, stopped.pgn, {"interrupted": True})

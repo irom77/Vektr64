@@ -216,12 +216,13 @@ def render(data: PageData) -> str:
         if len(measured) > 1:
             parts.append(line_chart([(v.id, float(v.anchor["elo"])) for v in measured]))
         parts.append(
-            "<div class=scroll><table><tr><th>Version<th class=num>Rating<th class=num>± margin"
+            "<div class=scroll><table><tr><th>Version<th>Network<th class=num>Rating<th class=num>± margin"
             "<th class=num>Games<th>Status"
         )
         for v in measured:
             parts.append(
-                f"<tr><td><code>{esc(v.id)}</code><td class=num>{v.anchor['elo']:.0f}"
+                f"<tr><td><code>{esc(v.id)}</code><td><code>{esc(v.net or '–')}</code>"
+                f"<td class=num>{v.anchor['elo']:.0f}"
                 f"<td class=num>{v.anchor.get('margin', 0):.0f}<td class=num>{esc(v.anchor.get('games', ''))}"
                 f"<td>{esc(v.status)}"
             )
@@ -233,7 +234,7 @@ def render(data: PageData) -> str:
     parts.append("<h2>Gate decisions</h2>")
     if gated:
         parts.append(
-            "<div class=scroll><table><tr><th>Version<th>Decision<th class=num>Games"
+            "<div class=scroll><table><tr><th>Version<th>Network<th>Decision<th class=num>Games"
             "<th class=num>Elo<th class=num>± margin<th>Finished"
         )
         for v in reversed(gated):
@@ -241,7 +242,8 @@ def render(data: PageData) -> str:
             elo = signed(g["elo"]) if isinstance(g.get("elo"), (int, float)) else "–"
             margin = f"{g['margin']:.1f}" if isinstance(g.get("margin"), (int, float)) else "–"
             parts.append(
-                f"<tr><td><code>{esc(v.id)}</code><td>{esc(g.get('decision', ''))}"
+                f"<tr><td><code>{esc(v.id)}</code><td><code>{esc(v.net or '–')}</code>"
+                f"<td>{esc(g.get('decision', ''))}"
                 f"<td class=num>{esc(g.get('games', ''))}<td class=num>{elo}<td class=num>{margin}"
                 f"<td>{esc(g.get('finished', v.created))}"
             )

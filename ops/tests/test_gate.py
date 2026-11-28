@@ -223,3 +223,38 @@ def test_discarded_batches_do_not_reject_once_some_are_counted(tmp_path):
     for _ in range(gate.DISCARD_LIMIT + 1):
         step(s, tmp_path, load(s).get(B[:12]), runner=bad)
     assert load(s).get(B[:12]).status == "candidate"
+
+
+def ratio_runner(*a, **k):
+    return result((5, 20, 50, 20, 5)), "pgn"
+
+
+def test_batches_record_the_speed_ratio(tmp_path, monkeypatch):
+    s, m = store_with_champion_and_candidate(tmp_path)
+    monkeypatch.setattr(gate, "bench_nps", lambda binary: 2_000_000 if binary.name == A[:12] else 1_400_000)
+    step(s, tmp_path, m.get(B[:12]), runner=ratio_runner)
+    (record,) = gate.batches(s, f"gate/{gate.test_id(A[:12], B[:12])}")
+    assert record["meta"]["speed_ratio"] == 0.7
+
+
+def put_ratios(s, ratios):
+    for i, r in enumerate(ratios):
+        upload_batch(s, gate.test_id(A[:12], B[:12]), f"h-{i}", result((5, 20, 50, 20, 5)), "p",
+                     {"speed_ratio": r} if r is not None else {"interrupted": True})
+
+
+def test_the_settled_verdict_carries_the_median_ratio(tmp_path):
+    s, m = store_with_champion_and_candidate(tmp_path)
+    put_ratios(s, [0.68, 0.90, 0.70, None])
+    assert gate.speed_ratio(s, gate.test_id(A[:12], B[:12])) == 0.7
+    v = gate.settled(s, B[:12], A[:12], verdict((100, 400, 1000, 480, 120), 4000))
+    assert v["speed_ratio"] == 0.7
+    assert load(s).get(B[:12]).gate["speed_ratio"] == 0.7
+
+
+def test_a_test_with_no_recorded_ratio_settles_without_one(tmp_path):
+    s, m = store_with_champion_and_candidate(tmp_path)
+    put_ratios(s, [None])
+    assert gate.speed_ratio(s, gate.test_id(A[:12], B[:12])) is None
+    gate.settled(s, B[:12], A[:12], verdict((100, 400, 1000, 480, 120), 4000))
+    assert "speed_ratio" not in load(s).get(B[:12]).gate

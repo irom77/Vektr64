@@ -143,3 +143,10 @@ def test_update_saves_nothing_when_the_change_raises(tmp_path):
     with pytest.raises(NotPromotable):
         update(s, rollback)
     assert s.read_bytes("nets", "manifest.json") == before
+
+
+def test_add_candidate_records_the_network():
+    m = boot()
+    v = add_candidate(m, B, "t1", net="0123456789abcdef")
+    assert v.net == "0123456789abcdef" and m.get(B[:12]).net == "0123456789abcdef"
+    assert add_candidate(m, C, "t2").net is None

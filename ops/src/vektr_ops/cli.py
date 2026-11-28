@@ -10,6 +10,7 @@ import psutil
 import typer
 import yaml
 
+from vektr_ops import builds
 from vektr_ops import gate as gate_mod
 from vektr_ops import manifest
 from vektr_ops.botconfig import load_env, render
@@ -103,7 +104,17 @@ def gate(
     if manifest.load(store).champion is None:
         typer.echo("error: there is no champion yet; run `vektr-ops promote <ref> --bootstrap`")
         raise typer.Exit(2)
-    candidate = manifest.update(store, lambda m: manifest.add_candidate(m, commit, utc_now()))
+    net = builds.net_hash(root, commit)
+    if net is not None:
+        try:
+            binary = builds.ensure_build(root, commit)
+        except builds.BuildFailed as error:
+            typer.echo(f"error: {commit[:12]} does not build\n{str(error)[-500:]}")
+            raise typer.Exit(2)
+        if not builds.netcheck(binary):
+            typer.echo("error: engine and trainer disagree on the network")
+            raise typer.Exit(2)
+    candidate = manifest.update(store, lambda m: manifest.add_candidate(m, commit, utc_now(), net))
     if candidate.status == "champion":
         typer.echo(f"{candidate.id} is already the champion")
         return

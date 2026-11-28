@@ -214,3 +214,36 @@ def test_train_reports_a_failed_run_and_exits_1(monkeypatch, tmp_path):
     monkeypatch.setattr("vektr_ops.training.run_training", boom)
     r = CliRunner().invoke(app, ["train", "--run", "r1", "--minutes", "1"])
     assert r.exit_code == 1 and "trainer exited with status 1" in r.output
+
+
+def gate_setup(monkeypatch, tmp_path, net, passes):
+    from helpers import store_with_champion_only
+
+    store_with_champion_only(tmp_path)
+    monkeypatch.setenv("VEKTR_STORE", str(tmp_path / "store"))
+    monkeypatch.setattr("vektr_ops.cli.resolve_commit", lambda root, ref: "b" * 40)
+    monkeypatch.setattr("vektr_ops.cli.is_pushed", lambda root, commit: True)
+    monkeypatch.setattr("vektr_ops.builds.net_hash", lambda root, commit: net)
+    monkeypatch.setattr("vektr_ops.builds.ensure_build", lambda root, commit: tmp_path / "vektr")
+    monkeypatch.setattr("vektr_ops.builds.netcheck", lambda binary: passes)
+    monkeypatch.setattr("vektr_ops.gate.step", lambda *a, **k: {"decision": "continue", "games": 0, "llr": 0.0, "elo": 0.0, "margin": 0.0})
+
+
+def test_gate_refuses_a_candidate_that_fails_netcheck(monkeypatch, tmp_path):
+    from vektr_ops.manifest import load
+    from vektr_ops.store import LocalStore
+
+    gate_setup(monkeypatch, tmp_path, "0123456789abcdef", False)
+    r = CliRunner().invoke(app, ["gate", "HEAD"])
+    assert r.exit_code == 2 and "engine and trainer disagree on the network" in r.output
+    assert [v.id for v in load(LocalStore(tmp_path / "store")).versions] == ["a" * 12]
+
+
+def test_gate_registers_the_network_hash(monkeypatch, tmp_path):
+    from vektr_ops.manifest import load
+    from vektr_ops.store import LocalStore
+
+    gate_setup(monkeypatch, tmp_path, "0123456789abcdef", True)
+    r = CliRunner().invoke(app, ["gate", "HEAD", "--max-batches", "1"])
+    assert r.exit_code == 0, r.output
+    assert load(LocalStore(tmp_path / "store")).get("b" * 12).net == "0123456789abcdef"
