@@ -64,7 +64,7 @@ def parse_line(line: bytes) -> tuple[list[int], int, int] | None:
             return None
         indices, stm = fen_features(fen)
         score = int(best["cp"])
-    except (ValueError, KeyError, TypeError, IndexError, AttributeError):
+    except (ValueError, KeyError, TypeError, IndexError, AttributeError, OverflowError):
         return None
     if stm == 1:
         score = -score

@@ -30,7 +30,11 @@ class Config:
 
 
 def pick_device() -> str:
-    return "cuda" if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
 
 
 def targets(score: torch.Tensor, result: torch.Tensor, score_weight: float) -> torch.Tensor:

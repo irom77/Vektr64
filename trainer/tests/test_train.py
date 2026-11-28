@@ -98,3 +98,18 @@ def test_resuming_with_different_data_or_holdout_is_refused(shards, tmp_path):
         train(other, tmp_path / "out", cfg(0.2), device="cpu", clock=fake_clock())
     with pytest.raises(ValueError, match="checkpoint"):
         train(shards, tmp_path / "out", cfg(0.2, holdout=0.05), device="cpu", clock=fake_clock())
+
+
+def test_device_is_cuda_then_mps_then_cpu(monkeypatch):
+    from vektr_trainer.train import pick_device
+
+    def set_up(cuda, mps):
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
+        monkeypatch.setattr(torch.backends.mps, "is_available", lambda: mps)
+
+    set_up(True, True)
+    assert pick_device() == "cuda"
+    set_up(False, True)
+    assert pick_device() == "mps"
+    set_up(False, False)
+    assert pick_device() == "cpu"

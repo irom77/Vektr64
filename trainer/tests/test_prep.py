@@ -43,6 +43,8 @@ def test_scores_are_clipped():
         line("8/8/8 w - -", ev(30, cp=1, line="e2e4")),
         line("4k3/8/8/3p4/4P3/8/8/4K3 w - -", ev(30, cp=50, line="e4d5")),  # best move captures
         line("4k3/8/8/3pP3/8/8/8/4K3 w - d6", ev(30, cp=50, line="e5d6")),  # en passant capture
+        b'{"fen": "%s", "evals": [{"depth": 30, "knodes": 1, "pvs": [{"cp": Infinity, "line": "e2e4"}]}]}' % QUIET.encode(),
+        b'{"fen": "%s", "evals": [{"depth": 30, "knodes": 1, "pvs": [{"cp": NaN, "line": "e2e4"}]}]}' % QUIET.encode(),
     ],
 )
 def test_unusable_lines_are_skipped(raw):
