@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+import time
 import urllib.request
 from pathlib import Path
 
@@ -12,7 +13,8 @@ import yaml
 
 from vektr_ops import builds
 from vektr_ops import gate as gate_mod
-from vektr_ops import manifest
+from vektr_ops import manifest, selfplay
+from vektr_ops.selfplay import PER_NET
 from vektr_ops.botconfig import load_env, render
 from vektr_ops.sizing import hash_mb
 from vektr_ops.store import Store, StoreUnavailable, open_store
@@ -93,7 +95,11 @@ def gate(
     root = repo_root()
     store = the_store(root)
     if work:
-        gate_mod.work(store, root)
+        gate_mod.work(
+            store,
+            root,
+            datagen=lambda: selfplay.step(store, root, load_env(root), commit=resolve_commit(root, "HEAD")),
+        )
         return
     if ref is None:
         typer.echo("error: give a git ref to test, or --work")
@@ -135,6 +141,33 @@ def gate(
         if max_batches and played >= max_batches:
             typer.echo("stopped: batch limit reached, test still open")
             return
+
+
+@app.command()
+def datagen(
+    shards: int = typer.Option(1, "--shards", help="How many shards to generate and upload."),
+    threads: int = typer.Option(None, "--threads", help="Engine threads; default fits this machine."),
+) -> None:
+    """Play self-play games with the champion's network and upload them as training data."""
+    from vektr_ops.match import bot_here, concurrency
+
+    root = repo_root()
+    store = the_store(root)
+    if threads is None:
+        threads = concurrency(*gate_mod.machine(), bot_here())
+    if threads < 1:
+        typer.echo("error: this machine must not play right now")
+        raise typer.Exit(1)
+    commit = resolve_commit(root, "HEAD")
+    for _ in range(shards):
+        started = time.monotonic()
+        try:
+            path = selfplay.generate(store, root, commit=commit, threads=threads)
+        except (selfplay.DatagenFailed, StoreUnavailable) as error:
+            typer.echo(f"error: {error}")
+            raise typer.Exit(1)
+        rate = selfplay.SHARD_POSITIONS / (time.monotonic() - started)
+        typer.echo(f"{path}  {rate:,.0f} positions/s")
 
 
 @app.command()
@@ -247,6 +280,7 @@ def train(
     run: str = typer.Option(..., "--run", help="Run id; an existing run resumes from its checkpoint."),
     minutes: float = typer.Option(..., "--minutes", help="Training time budget in minutes."),
     shards: int = typer.Option(None, "--shards", help="Use only the first N shards."),
+    selfplay: int = typer.Option(PER_NET, "--selfplay", help="Also train on the newest N self-play shards (0 = none)."),
 ) -> None:
     """Train a network on the prepared shards; checkpoints and results go to the store."""
     from vektr_ops import training
@@ -254,7 +288,7 @@ def train(
     root = repo_root()
     store = the_store(root)
     try:
-        record = training.run_training(store, root, run, minutes=minutes, shards=shards, env=load_env(root))
+        record = training.run_training(store, root, run, minutes=minutes, shards=shards, selfplay=selfplay, env=load_env(root))
     except (RuntimeError, ValueError, OSError, StoreUnavailable) as error:
         typer.echo(f"error: {error}")
         raise typer.Exit(1)
@@ -479,9 +513,16 @@ def sync() -> None:
         refresh_page(root)
         raise typer.Exit(1)
     try:
-        typer.echo(f"game records uploaded: {sync_mod.upload_games(store, root)}")
-    except StoreUnavailable as error:
-        typer.echo(f"game records not uploaded: {error}")
+        try:
+            typer.echo(f"game records uploaded: {sync_mod.upload_games(store, root)}")
+        except StoreUnavailable as error:
+            typer.echo(f"game records not uploaded: {error}")
+        try:
+            from vektr_ops import experience
+
+            typer.echo(f"lost games added: {experience.upload_experience(store, root)}")
+        except Exception as error:  # a fault in this extra step never fails the sync
+            typer.echo(f"lost games not added: {type(error).__name__}: {error}")
     finally:
         refresh_page(root)
 
@@ -540,13 +581,28 @@ def play(
     )
 
 
+def selfplay_line(store: Store, champion) -> None:
+    """The self-play progress line; left out when there is no champion or the store fails."""
+    if champion is None:
+        return
+    net = champion.net or "none"
+    try:
+        shards = len(selfplay.shards_for(store, net))
+        lost = sum(path.endswith(".fens") for path in store.list("data", "experience/"))
+    except StoreUnavailable:
+        return
+    typer.echo(f"self-play: {shards} of {PER_NET} shards for network {net}, lost games: {lost}")
+
+
 def store_lines(root: Path) -> None:
     """Status lines that come from the store and from this machine's sync state."""
     from vektr_ops.sync import current_id
 
+    store = None
     note = root / "state" / "sync-error"
     try:
-        m = manifest.load(open_store(load_env(root)))
+        store = open_store(load_env(root))
+        m = manifest.load(store)
     except StoreUnavailable as error:
         configured = "HF_TOKEN or VEKTR_STORE" not in str(error)
         typer.echo("store: unreachable" if configured else "store: not configured")
@@ -568,6 +624,7 @@ def store_lines(root: Path) -> None:
         open_tests = len(m.candidates())
         if open_tests:
             typer.echo(f"open tests: {open_tests}")
+        selfplay_line(store, champion)
     if note.is_file():
         typer.echo(f"sync error: {note.read_text().strip()}")
 

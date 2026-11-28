@@ -14,6 +14,7 @@ import torch
 from . import vknn
 from .model import Net, quantise
 from .prep import NO_RESULT, read_shard
+from .records import read_records
 from .vknn import SCALE
 
 
@@ -46,22 +47,49 @@ def targets(score: torch.Tensor, result: torch.Tensor, score_weight: float) -> t
     return torch.where(known, blended, squashed)
 
 
+def data_files(shards: Path) -> list[Path]:
+    """Every training file in the directory: `.npz` shards and `.vkd` / `.vkd.gz` record files."""
+    shards = Path(shards)
+    return sorted(p for pattern in ("*.npz", "*.vkd", "*.vkd.gz") for p in shards.glob(pattern))
+
+
+def split(total: int, holdout: float, seed: int) -> tuple[np.ndarray, np.ndarray]:
+    """(train indices, held-out indices): a seeded random sample, both ascending."""
+    held = min(int(total * holdout), total - 1) if holdout > 0 else 0
+    if holdout > 0 and held == 0 and total > 1:
+        held = 1
+    chosen = np.random.default_rng(seed).choice(total, size=held, replace=False)
+    mask = np.zeros(total, dtype=bool)
+    mask[chosen] = True
+    return np.flatnonzero(~mask), np.flatnonzero(mask)
+
+
+_COLUMNS = (("features", np.int16), ("stm", np.uint8), ("score", np.int16), ("result", np.uint8))
+
+
 def _load(shards: Path, device: str) -> tuple[torch.Tensor, ...]:
-    paths = sorted(Path(shards).glob("*.npz"))
+    """All files, validated, as compact tensors on the device (features/score int16, stm/result uint8)."""
+    paths = data_files(shards)
     if not paths:
-        raise ValueError(f"no shards (*.npz) in {shards}")
-    parts = [read_shard(p) for p in paths]
-    cat = {k: np.concatenate([p[k] for p in parts]) for k in ("features", "stm", "score", "result")}
-    return (
-        torch.from_numpy(cat["features"].astype(np.int32)).to(device),
-        torch.from_numpy(cat["stm"].astype(np.int64)).to(device),
-        torch.from_numpy(cat["score"].astype(np.int64)).to(device),
-        torch.from_numpy(cat["result"].astype(np.int64)).to(device),
-    )
+        raise ValueError(f"no shards (*.npz, *.vkd, *.vkd.gz) in {shards}")
+    parts = []
+    for path in paths:
+        data = read_shard(path) if path.suffix == ".npz" else read_records(path)
+        parts.append({name: data[name].astype(dtype) for name, dtype in _COLUMNS})
+    total = sum(len(part["stm"]) for part in parts)
+    columns = {name: np.empty((total, *parts[0][name].shape[1:]), dtype=dtype) for name, dtype in _COLUMNS}
+    at = 0
+    while parts:  # release each part once copied, so the peak is about one copy of the data
+        part = parts.pop(0)
+        n = len(part["stm"])
+        for name, _ in _COLUMNS:
+            columns[name][at : at + n] = part[name]
+        at += n
+    return tuple(torch.from_numpy(columns[name]).to(device) for name, _ in _COLUMNS)
 
 
 def _loss(net: Net, features, stm, score, result, weight: float) -> torch.Tensor:
-    out = net(features.long(), stm)
+    out = net(features.long(), stm.long())
     return ((torch.sigmoid(out) - targets(score, result, weight)) ** 2).mean()
 
 
@@ -77,10 +105,10 @@ def _validation_loss(net: Net, data, weight: float, batch: int) -> float | None:
     return total / n
 
 
-def _fingerprint(shards: Path, total: int, n_train: int, holdout: float) -> str:
+def _fingerprint(shards: Path, total: int, n_train: int, holdout: float, seed: int) -> str:
     """Identifies the data split, so a resume cannot train on what an earlier run held out."""
-    files = [[p.name, p.stat().st_size] for p in sorted(Path(shards).glob("*.npz"))]
-    return json.dumps({"shards": files, "total": total, "n_train": n_train, "holdout": holdout})
+    files = [[p.name, p.stat().st_size] for p in data_files(shards)]
+    return json.dumps({"shards": files, "total": total, "n_train": n_train, "holdout": holdout, "seed": seed})
 
 
 def _save_checkpoint(path: Path, net, opt, steps: int, elapsed: float, train_loss, fingerprint: str) -> None:
@@ -98,14 +126,14 @@ def train(shards: Path, out: Path, cfg: Config, *, device: str | None = None, cl
     out.mkdir(parents=True, exist_ok=True)
     features, stm, score, result = _load(shards, device)
     total = len(features)
-    held = min(int(total * cfg.holdout), total - 1) if cfg.holdout > 0 else 0
-    if cfg.holdout > 0 and held == 0 and total > 1:
-        held = 1
-    n_train = total - held
-    train_data = (features[:n_train], stm[:n_train], score[:n_train], result[:n_train])
-    val_data = (features[n_train:], stm[n_train:], score[n_train:], result[n_train:])
+    train_idx, held_idx = split(total, cfg.holdout, cfg.seed)
+    n_train = len(train_idx)
+    train_idx = torch.from_numpy(train_idx).to(device)
+    held_idx = torch.from_numpy(held_idx).to(device)
+    data = (features, stm, score, result)
+    val_data = tuple(d[held_idx] for d in data)
 
-    fingerprint = _fingerprint(shards, total, n_train, cfg.holdout)
+    fingerprint = _fingerprint(shards, total, n_train, cfg.holdout, cfg.seed)
     torch.manual_seed(cfg.seed)
     net = Net().to(device)
     net.clip_()
@@ -133,13 +161,13 @@ def train(shards: Path, out: Path, cfg: Config, *, device: str | None = None, cl
     while elapsed < budget:
         if perm is None or pos >= n_train:
             perm, pos = torch.randperm(n_train, device=device, generator=generator), 0
-        idx = perm[pos : pos + cfg.batch]
+        idx = train_idx[perm[pos : pos + cfg.batch]]
         pos += cfg.batch
         frac = min(elapsed / budget, 1.0)
         lr = cfg.lr_end + (cfg.lr - cfg.lr_end) * 0.5 * (1.0 + math.cos(math.pi * frac))
         for group in opt.param_groups:
             group["lr"] = lr
-        loss = _loss(net, *(d[idx] for d in train_data), cfg.score_weight)
+        loss = _loss(net, *(d[idx] for d in data), cfg.score_weight)
         opt.zero_grad()
         loss.backward()
         opt.step()

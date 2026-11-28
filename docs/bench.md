@@ -23,3 +23,13 @@ and it is only good for comparing one version of Vektr64 with another.
 
 The 1500 and 2100 anchors got 300 games each because the laptop and the box both started a
 batch for them at the same moment; extra games are counted, not thrown away.
+
+## Self-play speed
+
+`vektr datagen` plays games against itself at 5000 nodes per move and writes one 68-byte record per
+quiet position. Laptop (Intel Core Ultra 7 155H, 11 physical cores), embedded network, no starts file,
+10 threads (physical cores minus one), seed 1:
+
+| Positions | Games | Time | Positions per second | Result (+W =D -B) | Decisive games |
+|---|---|---|---|---|---|
+| 100,000 | 1,261 | 34 s | 2,940 | +566 =174 -521 | 86% |

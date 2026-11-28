@@ -152,7 +152,7 @@ impl Network {
 }
 
 /// Feature index as White sees it, and as Black sees it.
-fn features(color: Color, piece: Piece, square: usize) -> (usize, usize) {
+pub(crate) fn features(color: Color, piece: Piece, square: usize) -> (usize, usize) {
     let c = color as usize;
     let p = piece as usize;
     (c * 384 + p * 64 + square, (1 - c) * 384 + p * 64 + (square ^ 56))

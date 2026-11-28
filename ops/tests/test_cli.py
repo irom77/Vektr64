@@ -132,6 +132,20 @@ def test_status_shows_champion_gate_and_sync_error(monkeypatch, tmp_path):
     assert "last gate: bbbbbbbbbbbb reject" in out and "sync error: SyncRefused: boom" in out
 
 
+def test_status_shows_selfplay_progress(monkeypatch, tmp_path):
+    from helpers import store_with_champion_only
+
+    offline(monkeypatch)
+    s, _ = store_with_champion_only(tmp_path)
+    for i in range(2):
+        s.write_bytes("data", f"selfplay/20261128T00000{i}Z-none-box-0000.vkd.gz", b"x")
+    s.write_bytes("data", "experience/game.fens", b"fen\n")
+    monkeypatch.setenv("VEKTR_STORE", str(tmp_path / "store"))
+    monkeypatch.setattr("vektr_ops.cli.repo_root", lambda: tmp_path)
+    out = CliRunner().invoke(app, ["status"]).output
+    assert "self-play: 2 of 120 shards for network none, lost games: 1" in out
+
+
 def test_page_command_writes_the_file(monkeypatch, tmp_path):
     offline(monkeypatch)
     monkeypatch.setenv("VEKTR_STORE", str(tmp_path / "store"))
@@ -216,6 +230,24 @@ def test_train_reports_a_failed_run_and_exits_1(monkeypatch, tmp_path):
     assert r.exit_code == 1 and "trainer exited with status 1" in r.output
 
 
+from vektr_ops.selfplay import PER_NET
+
+
+def test_train_passes_selfplay(monkeypatch, tmp_path):
+    cli_setup(monkeypatch, tmp_path)
+    seen = {}
+
+    def fake(*a, **k):
+        seen.update(k)
+        return {"net": "n", "val_loss": 1.0}
+
+    monkeypatch.setattr("vektr_ops.training.run_training", fake)
+    r = CliRunner().invoke(app, ["train", "--run", "r1", "--minutes", "1", "--selfplay", "7"])
+    assert r.exit_code == 0 and seen["selfplay"] == 7
+    CliRunner().invoke(app, ["train", "--run", "r1", "--minutes", "1"])
+    assert seen["selfplay"] == PER_NET
+
+
 def gate_setup(monkeypatch, tmp_path, net, passes):
     from helpers import store_with_champion_only
 
@@ -247,3 +279,95 @@ def test_gate_registers_the_network_hash(monkeypatch, tmp_path):
     r = CliRunner().invoke(app, ["gate", "HEAD", "--max-batches", "1"])
     assert r.exit_code == 0, r.output
     assert load(LocalStore(tmp_path / "store")).get("b" * 12).net == "0123456789abcdef"
+
+
+def test_sync_reports_lost_games(monkeypatch, tmp_path):
+    import os
+
+    from test_experience import LOSS
+    from vektr_ops import sync as sync_mod
+
+    offline(monkeypatch)
+    monkeypatch.setenv("VEKTR_STORE", str(tmp_path / "store"))
+    monkeypatch.setattr("vektr_ops.cli.repo_root", lambda: tmp_path)
+    monkeypatch.setattr(sync_mod, "sync", lambda *a, **k: "unchanged")
+    records = tmp_path / "bot" / "game_records"
+    records.mkdir(parents=True)
+    game = records / "x vs Vektr64 - abc.pgn"
+    game.write_text(LOSS)
+    os.utime(game, (1, 1))
+    r = CliRunner().invoke(app, ["sync"])
+    assert r.exit_code == 0 and "lost games added: 1" in r.output
+
+
+def test_an_unavailable_store_for_lost_games_does_not_fail_the_sync(monkeypatch, tmp_path):
+    from vektr_ops import experience, sync as sync_mod
+    from vektr_ops.store import StoreUnavailable
+
+    def down(*a, **k):
+        raise StoreUnavailable("hub down")
+
+    offline(monkeypatch)
+    monkeypatch.setenv("VEKTR_STORE", str(tmp_path / "store"))
+    monkeypatch.setattr("vektr_ops.cli.repo_root", lambda: tmp_path)
+    monkeypatch.setattr(sync_mod, "sync", lambda *a, **k: "unchanged")
+    monkeypatch.setattr(experience, "upload_experience", down)
+    r = CliRunner().invoke(app, ["sync"])
+    assert r.exit_code == 0 and "lost games not added: StoreUnavailable: hub down" in r.output
+
+
+def test_a_vanishing_record_does_not_fail_the_sync(monkeypatch, tmp_path):
+    from vektr_ops import experience, sync as sync_mod
+
+    def gone(*a, **k):
+        raise OSError("record vanished")
+
+    offline(monkeypatch)
+    monkeypatch.setenv("VEKTR_STORE", str(tmp_path / "store"))
+    monkeypatch.setattr("vektr_ops.cli.repo_root", lambda: tmp_path)
+    monkeypatch.setattr(sync_mod, "sync", lambda *a, **k: "unchanged")
+    monkeypatch.setattr(experience, "upload_experience", gone)
+    r = CliRunner().invoke(app, ["sync"])
+    assert r.exit_code == 0 and "lost games not added: OSError: record vanished" in r.output
+
+
+def test_the_page_is_refreshed_even_when_the_game_upload_fails_badly(monkeypatch, tmp_path):
+    from vektr_ops import sync as sync_mod
+
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+
+    refreshed = []
+    offline(monkeypatch)
+    monkeypatch.setenv("VEKTR_STORE", str(tmp_path / "store"))
+    monkeypatch.setattr("vektr_ops.cli.repo_root", lambda: tmp_path)
+    monkeypatch.setattr("vektr_ops.cli.refresh_page", lambda root: refreshed.append(root))
+    monkeypatch.setattr(sync_mod, "sync", lambda *a, **k: "unchanged")
+    monkeypatch.setattr(sync_mod, "upload_games", boom)
+    r = CliRunner().invoke(app, ["sync"])
+    assert r.exit_code != 0 and refreshed == [tmp_path]
+
+
+def test_datagen_refuses_when_this_machine_must_not_play(monkeypatch, tmp_path):
+    monkeypatch.setenv("VEKTR_STORE", str(tmp_path))
+    monkeypatch.setattr("vektr_ops.match.bot_here", lambda: True)
+    monkeypatch.setattr("vektr_ops.cli.gate_mod.machine", lambda: (2, 4000))
+    r = CliRunner().invoke(app, ["datagen"])
+    assert r.exit_code == 1 and "must not play" in r.output
+
+
+def test_a_broken_experience_import_does_not_fail_the_sync(monkeypatch, tmp_path):
+    import sys
+
+    from vektr_ops import sync as sync_mod
+
+    offline(monkeypatch)
+    monkeypatch.setenv("VEKTR_STORE", str(tmp_path / "store"))
+    monkeypatch.setattr("vektr_ops.cli.repo_root", lambda: tmp_path)
+    monkeypatch.setattr(sync_mod, "sync", lambda *a, **k: "unchanged")
+    import vektr_ops
+
+    monkeypatch.delattr(vektr_ops, "experience", raising=False)
+    monkeypatch.setitem(sys.modules, "vektr_ops.experience", None)
+    r = CliRunner().invoke(app, ["sync"])
+    assert r.exit_code == 0 and "lost games not added:" in r.output

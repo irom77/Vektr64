@@ -7,8 +7,9 @@ import torch
 
 from vektr_trainer import vknn
 from vektr_trainer.features import EMPTY, fen_features
-from vektr_trainer.prep import NO_RESULT, write_shard
-from vektr_trainer.train import Config, train
+from vektr_trainer.prep import NO_RESULT, read_shard, write_shard
+from vektr_trainer.records import write_records
+from vektr_trainer.train import Config, split, train
 
 VALUES = {"p": 100, "n": 300, "b": 300, "r": 500, "q": 900}
 
@@ -113,3 +114,37 @@ def test_device_is_cuda_then_mps_then_cpu(monkeypatch):
     assert pick_device() == "mps"
     set_up(False, False)
     assert pick_device() == "cpu"
+
+
+def test_training_reads_both_kinds(tmp_path):
+    make_shards(tmp_path / "d", n=4096)
+    data = read_shard(tmp_path / "d" / "shard.npz")
+    result = np.arange(4096, dtype=np.uint8) % 3
+    write_records(tmp_path / "d" / "games.vkd.gz", data["features"], data["stm"], data["score"], result)
+    info = train(tmp_path / "d", tmp_path / "out", cfg(0.1), device="cpu", clock=fake_clock())
+    assert info["positions"] == 8192
+
+
+def test_held_out_sample_is_spread_and_repeatable():
+    train_idx, held = split(10_000, 0.01, 1)
+    assert len(held) == 100 and (held >= 9_900).sum() < 50
+    again_train, again_held = split(10_000, 0.01, 1)
+    assert np.array_equal(held, again_held) and np.array_equal(train_idx, again_train)
+    assert np.array_equal(np.sort(np.concatenate([train_idx, held])), np.arange(10_000))
+
+
+def test_resume_refuses_an_added_record_file(tmp_path):
+    make_shards(tmp_path / "d", n=4096)
+    train(tmp_path / "d", tmp_path / "out", cfg(0.1), device="cpu", clock=fake_clock())
+    data = read_shard(tmp_path / "d" / "shard.npz")
+    write_records(tmp_path / "d" / "more.vkd.gz", data["features"], data["stm"], data["score"], data["stm"])
+    with pytest.raises(ValueError, match="different data"):
+        train(tmp_path / "d", tmp_path / "out", cfg(0.2), device="cpu", clock=fake_clock())
+
+
+def test_a_corrupt_shard_stops_before_training(tmp_path):
+    make_shards(tmp_path / "d", n=4096)
+    (tmp_path / "d" / "b.vkd").write_bytes(bytes(100))
+    with pytest.raises(ValueError, match="b.vkd"):
+        train(tmp_path / "d", tmp_path / "out", cfg(0.1), device="cpu", clock=fake_clock())
+    assert not (tmp_path / "out" / "checkpoint.pt").exists()

@@ -44,6 +44,39 @@ def test_same_shard_name_in_two_datasets_does_not_collide(tmp_path):
     assert sorted(p.read_bytes() for p in dest.iterdir()) == [b"A", b"B"]
 
 
+def selfplay_store(tmp_path, n=5, boot=2):
+    store = store_with_shards(tmp_path, boot)
+    for i in range(n):
+        store.write_bytes("data", f"selfplay/2026112{i}T000000Z-net{i % 2}-host-abcd.vkd.gz", f"v{i}".encode())
+    return store
+
+
+def test_pull_shards_adds_the_newest_selfplay(tmp_path):
+    store, dest = selfplay_store(tmp_path), tmp_path / "shards"
+    paths = pull_shards(store, dest, selfplay=3)
+    boot = [f"bootstrap/lichess-eval-20261101/shard-{i:05d}.npz" for i in range(2)]
+    newest = [f"selfplay/2026112{i}T000000Z-net{i % 2}-host-abcd.vkd.gz" for i in (2, 3, 4)]
+    assert paths == boot + newest
+    assert sorted(p.name for p in dest.iterdir()) == sorted(n.replace("/", "__") for n in paths)
+    for n in paths:
+        assert (dest / n.replace("/", "__")).read_bytes() == store.read_bytes("data", n)
+
+
+def test_selfplay_zero_takes_none(tmp_path):
+    store, dest = selfplay_store(tmp_path), tmp_path / "shards"
+    paths = pull_shards(store, dest, selfplay=0)
+    assert all(p.startswith("bootstrap/") for p in paths) and len(paths) == 2
+    assert len(list(dest.iterdir())) == 2
+
+
+def test_shards_no_longer_selected_are_removed(tmp_path):
+    store, dest = selfplay_store(tmp_path), tmp_path / "shards"
+    pull_shards(store, dest, selfplay=5)
+    assert len(list(dest.iterdir())) == 7
+    pull_shards(store, dest, selfplay=2)
+    assert len(list(dest.iterdir())) == 4
+
+
 class FakeProc:
     """A trainer whose successive `poll()` calls run the scripted steps; the last one returns the exit code."""
 
@@ -327,3 +360,41 @@ def test_a_trainer_that_ignores_terminate_is_killed(tmp_path):
     with pytest.raises(KeyboardInterrupt):
         train(tmp_path, store, start)
     assert procs[0].calls[0] == "terminate" and procs[0].calls[-1] == "wait" and "kill" in procs[0].calls
+
+
+def test_the_run_record_lists_selfplay_shards(tmp_path):
+    store = selfplay_store(tmp_path)
+    record = train(tmp_path, store, starter([], on_exit=finish), selfplay=2)
+    assert record["shards"][-2:] == [f"selfplay/2026112{i}T000000Z-net{i % 2}-host-abcd.vkd.gz" for i in (3, 4)]
+    assert len(record["shards"]) == 4
+
+
+def test_a_resumed_run_says_it_uses_the_pinned_shards(tmp_path, capsys):
+    store = selfplay_store(tmp_path)
+    train(tmp_path, store, starter([], on_exit=finish), selfplay=2)
+    assert "resuming" not in capsys.readouterr().err
+    train(tmp_path, store, starter([], on_exit=finish), selfplay=0)
+    assert "resuming with 4 pinned shards" in capsys.readouterr().err
+
+
+def test_a_resumed_run_keeps_its_shard_selection(tmp_path):
+    store = selfplay_store(tmp_path)
+    first = train(tmp_path, store, starter([], on_exit=finish), selfplay=2)
+    store.write_bytes("data", "selfplay/20261129T000000Z-net0-host-abcd.vkd.gz", b"newer")
+    seen = []
+    again = train(tmp_path, store, starter([], seen=seen, on_exit=finish), selfplay=2)
+    assert again["shards"] == first["shards"]
+    assert not any("20261129" in p.name for p in (tmp_path / "state/train/r1/shards").iterdir())
+    other = run_training(store, tmp_path, "r2", minutes=1, env={"VEKTR_TRAINER_PYTHON": "py"},
+                         start=starter([], on_exit=finish), poll_s=0, selfplay=2)
+    assert "selfplay/20261129T000000Z-net0-host-abcd.vkd.gz" in other["shards"]
+
+
+def test_a_pinned_shard_missing_from_the_store_stops_before_training(tmp_path):
+    store = selfplay_store(tmp_path)
+    train(tmp_path, store, starter([], on_exit=finish), selfplay=2)
+    (tmp_path / "store/data/selfplay/20261124T000000Z-net0-host-abcd.vkd.gz").unlink()
+    started = []
+    with pytest.raises(FileNotFoundError, match="20261124"):
+        train(tmp_path, store, starter([], seen=started, on_exit=finish), selfplay=2)
+    assert started == []

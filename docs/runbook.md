@@ -2,6 +2,7 @@
 
 The bot runs on `irom-sei` (Ubuntu 24.04, 4 cores / 8 threads, reached over Tailscale at
 `100.114.82.19`, user `irom`) from `/home/irom/Vektr64`, as the systemd service `vektr64`.
+Things about this machine that are easy to trip over are in `docs/box.md`.
 
 ## What was set up (2026-11-27)
 
@@ -77,6 +78,27 @@ laptop, and some credit in the RunPod account.
 `vektr-ops burst --local --minutes M --run ID` runs the same script on this machine against the
 configured store, with no RunPod call: use it to try the whole path on a small dataset.
 
+## The loop
+
+The worker plays gate and anchor games first. Only when none is waiting does it generate self-play
+data: one shard (500,000 positions, about 34 MB before compression) at a time, with at most 2
+engine threads at the lowest priority. Shards go to the data repo under `selfplay/`. It stops at
+120 shards per champion network and starts a new count after a promotion to a version with a
+different network. Every standard game the bot lost on the board (not on time), casual ones
+included, becomes a starting position for the self-play games during the ten-minute sync. While a
+shard is being generated, a newly opened gate test or anchor job on that machine waits until the
+shard is finished.
+
+- `vektr-ops status` shows `self-play: <n> of 120 shards for network <hash>, lost games: <m>`.
+- To turn self-play off, put `VEKTR_DATAGEN=0` in `.env` on the box and run
+  `sudo systemctl restart vektr64-worker`.
+- `vektr-ops datagen --shards N` adds shards from the laptop. The 120 limit applies only to the
+  worker, so `status` can show more than 120.
+- One round by hand: `vektr-ops burst` (trains on the Lichess data and the newest 120 self-play
+  shards), `vektr-ops install-net`, then branch, commit and push, then `vektr-ops gate`, exactly as
+  in "Training a network".
+- `vektr-ops train --selfplay 0` trains on the Lichess data alone.
+
 ## Changing the engine: every change goes through the gate
 
 The engine that plays is the **champion** named in the manifest in the external store, not
@@ -116,7 +138,7 @@ of each version on the anchor scale, and every gate decision.
 | Unit | What it does |
 |---|---|
 | `vektr64-sync.timer` | Every 10 minutes: follow the champion, upload finished game records, rebuild the page |
-| `vektr64-worker.service` | Gate and anchor games, 2 at a time at the lowest priority |
+| `vektr64-worker.service` | Gate and anchor games, 2 at a time at the lowest priority; self-play data when it has nothing else to do |
 | `vektr64-page.service` | Serves the page |
 
 To stop background games (for example if rated games start losing on time):
