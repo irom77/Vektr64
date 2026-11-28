@@ -3,10 +3,11 @@
 import hashlib
 import json
 import subprocess
+import sys
 import time
 from pathlib import Path
 
-from vektr_ops.store import Store
+from vektr_ops.store import Store, StoreUnavailable
 
 
 def trainer_cmd(env: dict, module: str, *args: str) -> list[str]:
@@ -50,6 +51,18 @@ def _mtime(path: Path) -> int | None:
         return None
 
 
+def _stop(proc) -> None:
+    """Terminate the trainer, wait briefly, then kill it."""
+    try:
+        proc.terminate()
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+    except OSError:
+        pass
+
+
 def run_training(
     store: Store,
     root: Path,
@@ -60,6 +73,7 @@ def run_training(
     env: dict,
     start=subprocess.Popen,
     poll_s: float = 15,
+    sleep=time.sleep,
 ) -> dict:
     """Train a network, keeping the checkpoint and the results in `nets:runs/<run>/`."""
     work = root / "state" / "train" / run
@@ -81,6 +95,18 @@ def run_training(
             store.write_bytes("nets", prefix + "checkpoint.pt", checkpoint.read_bytes(), overwrite=True)
             uploaded = seen
 
+    def retrying(action) -> None:
+        """Run a final upload, retrying with backoff; the last StoreUnavailable propagates."""
+        for attempt in range(5):
+            try:
+                return action()
+            except StoreUnavailable as error:
+                if attempt == 4:
+                    raise
+                wait = 2.0 * 2**attempt
+                print(f"store unavailable ({error}); retrying in {wait:.0f}s", file=sys.stderr)
+                sleep(wait)
+
     cmd = trainer_cmd(
         env, "vektr_trainer.train",
         "--shards", str(work / "shards"), "--out", str(out), "--minutes", str(minutes),
@@ -88,10 +114,21 @@ def run_training(
     log_path = work / "trainer.log"
     with open(log_path, "wb") as log:
         proc = start(cmd, cwd=root, stdout=log, stderr=subprocess.STDOUT)
-        while (code := proc.poll()) is None:
-            upload_checkpoint()
-            time.sleep(poll_s)
-    upload_checkpoint()
+        try:
+            while (code := proc.poll()) is None:
+                try:
+                    upload_checkpoint()
+                except StoreUnavailable as error:
+                    print(f"checkpoint upload failed ({error}); retrying at the next poll", file=sys.stderr)
+                sleep(poll_s)
+        except BaseException:
+            _stop(proc)
+            raise
+    try:
+        retrying(upload_checkpoint)
+    except StoreUnavailable:
+        if code == 0:
+            raise
     if code != 0:
         tail = "\n".join(log_path.read_text(errors="replace").splitlines()[-30:])
         raise RuntimeError(f"trainer exited with status {code}:\n{tail}")
@@ -100,8 +137,9 @@ def run_training(
     record["shards"] = paths
     (out / "run.json").write_text(json.dumps(record, indent=2) + "\n")
     for name in ("net.vknn", "net.check", "run.json"):
-        store.write_bytes("nets", prefix + name, (out / name).read_bytes(), overwrite=True)
-    store.write_bytes("nets", f"nets/{record['net']}.vknn", (out / "net.vknn").read_bytes(), overwrite=True)
+        retrying(lambda name=name: store.write_bytes("nets", prefix + name, (out / name).read_bytes(), overwrite=True))
+    retrying(lambda: store.write_bytes(
+        "nets", f"nets/{record['net']}.vknn", (out / "net.vknn").read_bytes(), overwrite=True))
     return record
 
 

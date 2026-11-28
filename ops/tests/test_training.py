@@ -1,11 +1,12 @@
 import hashlib
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from vektr_ops.store import LocalStore
+from vektr_ops.store import LocalStore, StoreUnavailable
 from vektr_ops.training import NetCheckFailed, install_net, pull_shards, run_training, trainer_cmd
 
 
@@ -215,3 +216,114 @@ def test_a_passing_check_keeps_the_new_network(tmp_path):
     store, nets = seeded_engine(tmp_path)
     install_net(store, tmp_path, "r1", check=lambda root: [])
     assert (nets / "default.vknn").read_bytes() == b"network"
+
+
+class FlakyStore(LocalStore):
+    """Fails the first `fails` writes to paths ending in `suffix` with StoreUnavailable."""
+
+    def __init__(self, root, suffix, fails):
+        super().__init__(root)
+        self.suffix, self.fails, self.attempts = suffix, fails, 0
+
+    def write_bytes(self, repo, path, data, **kw):
+        if path.endswith(self.suffix):
+            self.attempts += 1
+            if self.attempts <= self.fails:
+                raise StoreUnavailable("hub down")
+        super().write_bytes(repo, path, data, **kw)
+
+
+def test_a_failed_checkpoint_upload_in_the_poll_loop_is_retried_at_the_next_poll(tmp_path, capsys):
+    store = FlakyStore(tmp_path / "store", "checkpoint.pt", 1)
+    for i in range(2):
+        store.write_bytes("data", f"bootstrap/d/shard-{i:05d}.npz", b"x")
+    steps = [write_checkpoint(b"one", 10**18), lambda out: None]
+    train(tmp_path, store, starter(steps, on_exit=finish_keep))
+    assert "hub down" in capsys.readouterr().err
+    assert store.read_bytes("nets", "runs/r1/checkpoint.pt") == b"one"
+
+
+def test_final_uploads_are_retried_with_backoff(tmp_path):
+    store = FlakyStore(tmp_path / "store", "net.vknn", 2)
+    for i in range(2):
+        store.write_bytes("data", f"bootstrap/d/shard-{i:05d}.npz", b"x")
+    sleeps = []
+    train(tmp_path, store, starter([], on_exit=finish), sleep=sleeps.append)
+    assert store.read_bytes("nets", "runs/r1/net.vknn") == b"network"
+    assert len([s for s in sleeps if s]) == 2  # two backoff waits, none at poll_s=0
+
+
+def test_final_uploads_that_keep_failing_raise_after_five_tries(tmp_path):
+    store = FlakyStore(tmp_path / "store", "run.json", 10**6)
+    for i in range(2):
+        store.write_bytes("data", f"bootstrap/d/shard-{i:05d}.npz", b"x")
+    sleeps = []
+    with pytest.raises(StoreUnavailable):
+        train(tmp_path, store, starter([], on_exit=finish), sleep=sleeps.append)
+    assert store.attempts == 5
+
+
+def test_the_train_command_reports_a_store_failure_in_one_line(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from vektr_ops import cli, training
+
+    def boom(*a, **k):
+        raise StoreUnavailable("hub down")
+
+    monkeypatch.setattr(cli, "the_store", lambda root: None)
+    monkeypatch.setattr(cli, "load_env", lambda root: {})
+    monkeypatch.setattr(training, "run_training", boom)
+    result = CliRunner().invoke(cli.app, ["train", "--run", "r", "--minutes", "1"])
+    assert result.exit_code == 1
+    assert "hub down" in result.output and "Traceback" not in result.output
+
+
+class Killable(FakeProc):
+    def __init__(self, *a, hang=False, **k):
+        super().__init__(*a, **k)
+        self.calls, self.hang = [], hang
+
+    def terminate(self):
+        self.calls.append("terminate")
+
+    def kill(self):
+        self.calls.append("kill")
+
+    def wait(self, timeout=None):
+        self.calls.append("wait")
+        if self.hang and "kill" not in self.calls:
+            raise subprocess.TimeoutExpired("py", timeout)
+
+
+@pytest.mark.parametrize("exc", [KeyboardInterrupt, RuntimeError])
+def test_an_interrupt_terminates_the_trainer(tmp_path, exc):
+    store = store_with_shards(tmp_path)
+    procs = []
+
+    def start(cmd, cwd=None, stdout=None, stderr=None):
+        procs.append(Killable(Path(cmd[cmd.index("--out") + 1]), [boom], 0, None))
+        return procs[0]
+
+    def boom(out):
+        raise exc("stop")
+
+    with pytest.raises(exc):
+        train(tmp_path, store, start)
+    assert procs[0].calls[0] == "terminate" and "kill" not in procs[0].calls
+
+
+def test_a_trainer_that_ignores_terminate_is_killed(tmp_path):
+    store = store_with_shards(tmp_path)
+    procs = []
+
+    def start(cmd, cwd=None, stdout=None, stderr=None):
+        procs.append(Killable(Path(cmd[cmd.index("--out") + 1]), [boom], 0, None, hang=True))
+        return procs[0]
+
+    def boom(out):
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        train(tmp_path, store, start)
+    assert procs[0].calls[0] == "terminate" and procs[0].calls[-1] == "wait" and "kill" in procs[0].calls
